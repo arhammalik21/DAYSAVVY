@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DaySavvy</title>
+
+  <!-- Bootstrap CSS and Google Font -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap" rel="stylesheet">
+
+  <style>
+    /* Base typography and theme-aware colors */
+    body {
+      font-family: 'Montserrat', Arial, sans-serif;
+      background: var(--bs-body-bg);
+      color: var(--bs-body-color);
+      margin: 0;
+    }
+    h1, h2 { font-family: 'Montserrat', Arial, sans-serif; }
+
+    /* Page container width and spacing */
+    .container { max-width: 900px; margin: 0 auto; }
+
+    /* Flash messages styling */
+    .flash { padding: 8px; border-radius: 4px; margin-bottom: 10px; }
+    .flash-success { background: #d4edda; color: #155724; }
+    .flash-info    { background: #cce5ff; color: #004085; }
+    .flash-warning { background: #fff3cd; color: #856404; }
+
+    /* Cards spacing and completed task style */
+    .card { margin-bottom: 12px; }
+    .completed-task { text-decoration: line-through; color: gray; }
+
+    /* Force dark mode background if theme is dark */
+    :root[data-bs-theme='dark'] { --bs-body-bg: #121212; }
+
+    /* Navbar cleanup */
+    .navbar { background-color: transparent !important; border-bottom: 0 !important; }
+
+    /* Theme toggle button visuals */
+    #themeToggle:hover { filter: brightness(1.15); }
+    #themeToggle, #themeToggle:focus, #themeToggle:hover, #themeToggle:active {
+      border: none !important; box-shadow: none !important;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- App title -->
+  <h1 class="display-4 text-primary text-center my-4" style="letter-spacing:2px;font-weight:700;">DaySavvy</h1>
+
+  <!-- Minimal navbar with theme toggle aligned right -->
+  <nav class="navbar px-3 mb-2 bg-transparent">
+    <div class="container-fluid d-flex align-items-center">
+      <button id="themeToggle"
+              class="p-0 border-0 bg-transparent ms-auto"
+              title="Toggle dark mode" aria-label="Toggle dark mode"
+              style="font-size:1.35rem; line-height:1;">
+        <span id="themeIcon">☀️</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Main content container -->
+  <div class="container pb-4">
+
+    <!-- Flash messages (feedback after actions) -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="mb-3">
+          {% for category, message in messages %}
+            <div class="flash flash-{{category}}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <!-- Field validation (server-side) -->
+    {% if form.task.errors %}
+      <div class="flash flash-warning">
+        {% for error in form.task.errors %}
+          {{ error }}
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <!-- Search & Filter bar (GET submits to same page and updates q/status in URL) -->
+    <div class="card mb-3">
+      <div class="card-body">
+        <form method="GET" action="{{ url_for('index') }}" class="d-flex align-items-center gap-2 flex-wrap">
+          <input
+            type="text"
+            name="q"
+            class="form-control flex-grow-1"
+            placeholder="Search tasks…"
+            value="{{ request.args.get('q','') }}"
+            style="min-width:240px;"
+          >
+          <select name="status" class="form-select" style="width:180px;">
+            <option value="" {% if request.args.get('status','') == '' %}selected{% endif %}>All</option>
+            <option value="incomplete" {% if request.args.get('status')=='incomplete' %}selected{% endif %}>Incomplete</option>
+            <option value="completed"  {% if request.args.get('status')=='completed'  %}selected{% endif %}>Completed</option>
+            <option value="overdue"    {% if request.args.get('status')=='overdue'    %}selected{% endif %}>Overdue</option>
+          </select>
+          <button type="submit" class="btn btn-outline-secondary">Filter</button>
+          <!-- Clear resets filters by navigating to / without params -->
+          <a class="btn btn-link ms-1" href="{{ url_for('index') }}">Clear</a>
+        </form>
+      </div>
+    </div>
+
+    <!-- Add Task form (POST submits to create a new task) -->
+    <div class="card mb-4">
+      <div class="card-header">Add Task</div>
+      <div class="card-body">
+        <form method="POST" action="{{ url_for('index') }}" class="row g-2">
+          {{ form.csrf_token }}
+          <div class="col-md-6">
+            {{ form.task(class="form-control", placeholder="Task name") }}
+          </div>
+          <div class="col-md-3">
+            {{ form.due_date(class="form-control", placeholder="YYYY-MM-DD") }}
+          </div>
+          <div class="col-md-2">
+            {{ form.category(class="form-select") }}
+          </div>
+          <div class="col-md-1 d-grid">
+            <button type="submit" class="btn btn-primary">Add</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!--AI Voice command-->
+<div class="voice-control mb-3">
+    <button id="voiceBtn" class="btn btn-ai-mic" onclick="startVoiceRecognition()">
+        <i class="material-icons-outlined">settings_voice</i>
+        <span class="mic-text">AI Voice</span>
+    </button>
+    <div id="voiceStatus" class="mt-2 text-info"></div>
+</div>
+
+<!-- Add Material Icons -->
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+
+<style>
+.btn-ai-mic {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    color: white;
+    padding: 12px 24px;
+    border-radius: 50px;
+    font-weight: bold;
+    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.btn-ai-mic:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+}
+
+.btn-ai-mic:active {
+    transform: translateY(-1px);
+}
+
+.btn-ai-mic i {
+    font-size: 20px;
+}
+
+.mic-text {
+    font-size: 14px;
+    letter-spacing: 0.5px;
+}
+
+/* Pulsing animation when listening */
+.btn-ai-mic.listening {
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+    animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+    70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+}
+</style>
+
+<!--JS codes for AI voice command-->
+<script>
+function startVoiceRecognition() {
+    const status = document.getElementById('voiceStatus');
+    const btn = document.getElementById('voiceBtn');
+    
+    // Check browser support
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        status.textContent = '❌ Speech recognition not supported. Use Chrome browser.';
+        status.style.color = 'red';
+        return;
+    }
+    
+    // Check if already listening
+    if (btn.disabled) return;
+    
+    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+    
+    // Configure recognition
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    
+    // UI feedback
+    btn.textContent = '🔴 Listening...';
+    btn.disabled = true;
+    status.textContent = '🎤 Speak now... (say "add buy milk")';
+    status.style.color = 'blue';
+    
+    // Start recognition
+    try {
+        recognition.start();
+    } catch (error) {
+        status.textContent = '❌ Error starting recognition: ' + error.message;
+        resetButton();
+        return;
+    }
+    
+    // Handle successful speech recognition
+    recognition.onresult = function(event) {
+        const transcript = event.results[0][0].transcript;
+        const confidence = event.results.confidence;
+        
+        console.log('Speech recognized:', transcript, 'Confidence:', confidence);
+        status.textContent = `You said: "${transcript}" (${Math.round(confidence * 100)}% confident)`;
+        status.style.color = 'green';
+        
+        // Send to Flask
+        fetch('/voice/command', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({transcript: transcript})
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            status.textContent = '✅ ' + data.message;
+            status.style.color = data.success ? 'green' : 'orange';
+            if (data.success) {
+                setTimeout(() => location.reload(), 1500);
+            }
+        })
+        .catch(error => {
+            status.textContent = '❌ Network error: ' + error.message;
+            status.style.color = 'red';
+        });
+    };
+    
+    // Handle speech recognition errors
+    recognition.onerror = function(event) {
+        console.error('Speech recognition error:', event.error);
+        let errorMsg = '';
+        
+        switch(event.error) {
+            case 'no-speech':
+                errorMsg = '❌ No speech detected. Speak louder and closer to mic.';
+                break;
+            case 'audio-capture':
+                errorMsg = '❌ Microphone not accessible. Check permissions.';
+                break;
+            case 'not-allowed':
+                errorMsg = '❌ Microphone access denied. Enable in browser settings.';
+                break;
+            case 'network':
+                errorMsg = '❌ Network error. Check internet connection.';
+                break;
+            case 'language-not-supported':
+                errorMsg = '❌ Language not supported. Try Chrome browser.';
+                break;
+            default:
+                errorMsg = `❌ Speech error: ${event.error}`;
+        }
+        
+        status.textContent = errorMsg;
+        status.style.color = 'red';
+        resetButton();
+    };
+    
+    // Handle end of recognition
+    recognition.onend = function() {
+        console.log('Speech recognition ended');
+        resetButton();
+        
+        if (status.textContent === '🎤 Speak now... (say "add buy milk")') {
+            status.textContent = '❌ No speech heard. Try again and speak clearly.';
+            status.style.color = 'red';
+        }
+    };
+    
+    // Timeout after 10 seconds
+    setTimeout(() => {
+        if (btn.disabled) {
+            recognition.stop();
+            status.textContent = '⏰ Timeout. Click and try again.';
+            status.style.color = 'orange';
+            resetButton();
+        }
+    }, 10000);
+    
+    function resetButton() {
+        btn.textContent = '🎤 Voice Command';
+        btn.disabled = false;
+    }
+}
+</script>
+
+<!--AI Voice replies-->
+<script>
+// Add this function for voice replies
+function speakText(text) {
+    if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 0.8;
+        utterance.pitch = 1;
+        utterance.volume = 0.8;
+        speechSynthesis.speak(utterance);
+    }
+}
+
+function startVoiceRecognition() {
+    const status = document.getElementById('voiceStatus');
+    const btn = document.getElementById('voiceBtn');
+    
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        status.textContent = '❌ Speech recognition not supported. Use Chrome browser.';
+        return;
+    }
+    
+    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+    
+    recognition.lang = 'en-US';
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    
+    btn.textContent = '🔴 Listening...';
+    btn.disabled = true;
+    status.textContent = '🎤 Speak your command...';
+    
+    recognition.start();
+    
+    recognition.onresult = function(event) {
+        const transcript = event.results[0][0].transcript;
+        status.textContent = `You said: "${transcript}"`;
+        
+        fetch('/voice/command', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({transcript: transcript})
+        })
+        .then(response => response.json())
+        .then(data => {
+            status.textContent = data.success ? '✅ ' + data.message : '❌ ' + data.message;
+            
+            // ADD VOICE REPLY HERE
+            speakText(data.message);  // This makes it talk back!
+            
+            if (data.success) {
+                setTimeout(() => location.reload(), 2000);
+            }
+        })
+        .catch(error => {
+            status.textContent = '❌ Error: ' + error.message;
+            speakText('Sorry, there was an error processing your command.');
+        });
+    };
+    
+    recognition.onerror = function(event) {
+        let errorMsg = event.error === 'no-speech' ? 
+            'No speech detected. Try again.' : 
+            'Speech error: ' + event.error;
+        
+        status.textContent = '❌ ' + errorMsg;
+        speakText(errorMsg);
+        resetButton();
+    };
+    
+    recognition.onend = function() {
+        resetButton();
+    };
+    
+    function resetButton() {
+        btn.textContent = '🎤 Voice Command';
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+<form method="post">
+    {{ form.hidden_tag() }}
+    <!-- your form fields here -->
+</form>
+
+    <!-- Tasks header with hint about current filter state -->
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <h5 class="mb-0">Tasks</h5>
+      {% if request.args.get('q') or request.args.get('status') %}
+        <small class="text-muted">
+          Showing filtered results
+          {% if request.args.get('q') %} for "{{ request.args.get('q') }}" {% endif %}
+          {% if request.args.get('status') %} ({{ request.args.get('status') }}) {% endif %}
+        </small>
+      {% else %}
+        <small class="text-muted">Showing all tasks</small>
+      {% endif %}
+    </div>
+
+    <!-- Group tasks into incomplete and completed ON THE FILTERED LIST -->
+    {% set incomplete_tasks = tasks | selectattr('completed', 'equalto', False) | list %}
+    {% set completed_tasks  = tasks | selectattr('completed', 'equalto', True)  | list %}
+
+    <!-- Incomplete Tasks Section -->
+    <h6 class="mt-3">Incomplete</h6>
+    <div class="row">
+      {% if incomplete_tasks %}
+        {% for task in incomplete_tasks %}
+          <div class="col-12">
+            <div class="card shadow-sm">
+              <div class="card-body d-flex justify-content-between align-items-center">
+                <span>
+                  <strong>{{ task.name }}</strong>
+                  {% if task.due_date %}
+                    <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
+                    {% if task.due_date < current_date %}
+                      <span class="badge bg-danger ms-2">Overdue!</span>
+                    {% endif %}
+                  {% else %}
+                    <span class="badge bg-light text-dark ms-2">No due date</span>
+                  {% endif %}
+                  <span class="badge bg-info text-dark ms-2">{{ task.category }}</span>
+                </span>
+                <div>
+                  <!-- Complete -->
+                  <a class="btn btn-success btn-sm me-1" href="{{ url_for('complete_task', task_id=task.id) }}">Complete</a>
+                  <!-- Edit -->
+                  <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
+                  <!-- Delete -->
+                  <a class="btn btn-danger btn-sm" href="{{ url_for('delete_task', task_id=task.id) }}" onclick="return confirm('Delete this task?');">Delete</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-muted">No incomplete tasks.</p>
+      {% endif %}
+    </div>
+
+    <!-- Completed Tasks Section -->
+    <h6 class="mt-4">Completed</h6>
+    <div class="row">
+      {% if completed_tasks %}
+        {% for task in completed_tasks %}
+          <div class="col-12">
+            <div class="card bg-light shadow-sm">
+              <div class="card-body d-flex justify-content-between align-items-center">
+                <span class="completed-task">
+                  <strong>{{ task.name }}</strong>
+                  {% if task.due_date %}
+                    <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
+                  {% endif %}
+                  <span class="badge bg-info text-dark ms-2">{{ task.category }}</span>
+                </span>
+                <div>
+                  <!-- Edit -->
+                  <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
+                  <!-- Delete -->
+                  <a class="btn btn-danger btn-sm" href="{{ url_for('delete_task', task_id=task.id) }}" onclick="return confirm('Delete this task?');">Delete</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <p class="text-muted">No completed tasks.</p>
+      {% endif %}
+    </div>
+
+  </div> <!-- /container -->
+
+  <!-- Theme toggle logic -->
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const html  = document.documentElement; // <html>
+      const btn   = document.getElementById('themeToggle');
+      const icon  = document.getElementById('themeIcon');
+
+      // Helper to update icon based on theme
+      const setIcon = theme => { icon.textContent = theme === 'dark' ? '🌙' : '☀️'; };
+
+      // Load stored theme or default to light
+      const saved = localStorage.getItem('theme') || 'light';
+      html.setAttribute('data-bs-theme', saved);
+      setIcon(saved);
+
+      // Toggle theme on click
+      btn.addEventListener('click', () => {
+        const next = (html.getAttribute('data-bs-theme') === 'light') ? 'dark' : 'light';
+        html.setAttribute('data-bs-theme', next);
+        localStorage.setItem('theme', next);
+        setIcon(next);
+      });
+    });
+  </script>
+</body>
+</html>
