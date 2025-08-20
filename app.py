@@ -82,6 +82,8 @@ def find_task_by_id(task_id):
 # ----- AI Voice Command Route -----
 # Add this in your app.py top-level (simple in-memory session)
 conversation_state = {"next_expected": None, "pending_task": None}
+STOP_WORDS = {"stop", "done", "cancel", "exit", "quit", "thank you", "thanks"}
+
 
 from datetime import date, timedelta, datetime
 import re
@@ -90,21 +92,33 @@ from flask import jsonify, request
 @csrf.exempt
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
+    # Read input safely
     data = request.get_json() or {}
     transcript = (data.get("transcript") or "").strip()
     tl = transcript.lower()
 
-    global next_id, conversation_state
+    global next_id, conversation_state, tasks
 
-    def respond(message, success=False, reload=False, next_expected=None):
+    # Stop phrases end the continuous client loop
+    if any(sw in tl for sw in STOP_WORDS):
+        return jsonify({
+            "message": "Okay, stopping voice session. Tap AI Voice to start again.",
+            "success": False,
+            "reload": False,
+            "next_expected": None,
+            "stop_listening": True
+        })
+
+    def respond(message, success=False, reload=False, next_expected=None, stop=False):
         return jsonify({
             "message": message,
             "success": success,
             "reload": reload,
-            "next_expected": next_expected
+            "next_expected": next_expected,
+            "stop_listening": stop
         })
 
-    # Follow-up flow
+    # Current follow-up state
     pending = conversation_state.get("pending_task")
     expecting = conversation_state.get("next_expected")
 
@@ -122,7 +136,7 @@ def voice_command():
                     n = int(m.group(1))
                     parsed_due = date.today() + timedelta(days=n)
             else:
-                # Try YYYY-MM-DD
+                # Try strict YYYY-MM-DD
                 parsed_due = datetime.strptime(transcript, "%Y-%m-%d").date()
         except Exception:
             parsed_due = None
@@ -131,7 +145,7 @@ def voice_command():
             pending["due_date"] = parsed_due
             conversation_state["next_expected"] = "category"
             return respond(
-                f"Due date set to {parsed_due.isoformat()}. What category should I use? For example: Work, Personal, Study, Other.",
+                f"Due date set to {parsed_due.isoformat()}. What category should I use? For example: Work, Personal, Study, or Other.",
                 success=False,
                 reload=True,
                 next_expected="category"
@@ -151,6 +165,7 @@ def voice_command():
             if c in tl:
                 cat = c.capitalize()
                 break
+
         if not cat:
             return respond(
                 "I didn't catch a category. Try: Work, Personal, Study, Other, Health, Shopping, Finance, or School.",
@@ -162,37 +177,40 @@ def voice_command():
         pending["category"] = cat
         conversation_state = {"next_expected": None, "pending_task": None}
         return respond(
-            f"Category set to {cat}. All set!",
+            f"Category set to {cat}. All set! What next?",
             success=False,
             reload=True,
             next_expected=None
         )
 
-    # New commands
-    # ADD
-    if any(w in tl for w in ["add ", "create ", "new "]):
-        base = None
-        for w in ["add", "create", "new"]:
-            if w in tl:
-                parts = tl.split(w, 1)
-                if len(parts) > 1:
-                    base = parts[1].strip()
-                    break
-        if not base:
-            return respond("I heard add, but not the task name. Say: add buy milk.", False, False, None)
+    # 3) New commands
 
-        clean = (
-            base.replace("task", "")
-                .replace("to my list", "")
-                .replace("in my list", "")
-                .strip(" .")
-        )
-        if not clean:
-            return respond("What should I add? Please say the task name.", False, False, None)
+    # ADD / CREATE / NEW
+    if ("add" in tl) or ("create" in tl) or ("new" in tl):
+        # Pick the first keyword index
+        kw = None
+        idx = -1
+        for w in ["add", "create", "new"]:
+            i = tl.find(w)
+            if i != -1 and (idx == -1 or i < idx):
+                idx = i
+                kw = w
+        task_name = ""
+        if kw and idx != -1:
+            after = transcript[idx + len(kw):].strip()  # use original transcript for casing
+            task_name = (
+                after.replace("task", "")
+                     .replace("to my list", "")
+                     .replace("in my list", "")
+                     .strip(" .,:;")
+            )
+
+        if not task_name:
+            return respond("I heard add, but not the task name. Say: add buy milk.", False, False, None)
 
         new_task = {
             "id": next_id,
-            "name": clean,
+            "name": task_name,
             "completed": False,
             "due_date": None,
             "category": "Other"
@@ -200,44 +218,51 @@ def voice_command():
         tasks.append(new_task)
         next_id += 1
 
-        conversation_state = {"next_expected": "due_date", "pending_task": new_task}
+        conversation_state["pending_task"] = new_task
+        conversation_state["next_expected"] = "due_date"
+
         return respond(
-            f"Got it! I added '{clean}'. Do you want to set a due date? You can say 'tomorrow', 'in 3 days', or 2025-08-25.",
+            f"Got it! I added '{task_name}'. Do you want to set a due date? You can say 'tomorrow', 'in 3 days', or 2025-08-25.",
             success=True,
             reload=True,
             next_expected="due_date"
         )
 
-    # DELETE
-    if any(w in tl for w in ["delete", "remove"]):
+    # DELETE / REMOVE
+    if ("delete" in tl) or ("remove" in tl):
         target = None
+        # find earliest keyword and slice after it
+        kw = None
+        idx = -1
         for w in ["delete", "remove"]:
-            if w in tl:
-                parts = tl.split(w, 1)
-                if len(parts) > 1:
-                    target = parts[1].strip()
-                    break
+            i = tl.find(w)
+            if i != -1 and (idx == -1 or i < idx):
+                idx = i
+                kw = w
+        if kw and idx != -1:
+            after = transcript[idx + len(kw):].strip()
+            target = (
+                after.replace("task", "")
+                     .replace("from my list", "")
+                     .replace("in my task", "")
+                     .strip(" .,:;")
+            )
+
         if not target:
             return respond("What should I delete? Say: delete gym workout.", False, False, None)
 
-        target = (
-            target.replace("task", "")
-                  .replace("from my list", "")
-                  .replace("in my task", "")
-                  .strip(" .")
-        )
         for i, t in enumerate(tasks):
             if target.lower() in t["name"].lower():
                 removed = tasks.pop(i)
-                # Clear pending flow if it referenced removed task
+                # Clear pending flow if it referenced the removed task
                 if conversation_state.get("pending_task") and conversation_state["pending_task"]["id"] == removed["id"]:
                     conversation_state = {"next_expected": None, "pending_task": None}
                 return respond(f"Deleted '{removed['name']}'.", True, True, None)
 
         return respond(f"I couldn't find a task containing '{target}'.", False, False, None)
 
-    # COMPLETE
-    if any(w in tl for w in ["complete", "done", "finish", "mark as done"]):
+    # COMPLETE / DONE / FINISH
+    if ("complete" in tl) or ("done" in tl) or ("finish" in tl) or ("mark as done" in tl):
         m = re.search(r"task\s*(\d+)", tl)
         if m:
             tid = int(m.group(1))
@@ -247,6 +272,7 @@ def voice_command():
                 return respond(f"Marked task {tid} as complete: '{t['name']}'.", True, True, None)
             return respond(f"I couldn't find task {tid}.", False, False, None)
 
+        # fallback: first incomplete
         for t in tasks:
             if not t["completed"]:
                 t["completed"] = True
@@ -254,8 +280,8 @@ def voice_command():
 
         return respond("Looks like everything is already complete.", False, False, None)
 
-    # STATUS
-    if any(w in tl for w in ["what's on my list", "what is on my list", "read my tasks", "show tasks", "what do i need to do"]):
+    # STATUS / LIST
+    if ("what's on my list" in tl) or ("what is on my list" in tl) or ("read my tasks" in tl) or ("show tasks" in tl) or ("what do i need to do" in tl):
         inc = [t for t in tasks if not t["completed"]]
         if not tasks:
             return respond("Your list is empty. Want me to add something?", False, False, None)
@@ -267,8 +293,10 @@ def voice_command():
         return respond(f"You have {len(inc)} tasks: {titles}{more}.", False, False, None)
 
     # DEFAULT
-    return respond(f"I heard '{transcript}'. Try: add buy milk; delete gym; complete task 1.", False, False, None)
-
+    return respond(
+        f"I heard '{transcript}'. Try: add buy milk; delete gym; complete task 1.",
+        False, False, None
+    )
 
 # ----- WTForms: Task form definition -----
 class TaskForm(FlaskForm):
