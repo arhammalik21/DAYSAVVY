@@ -80,70 +80,194 @@ def find_task_by_id(task_id):
     return next((t for t in tasks if t["id"] == task_id), None)
 
 # ----- AI Voice Command Route -----
+# Add this in your app.py top-level (simple in-memory session)
+conversation_state = {"next_expected": None, "pending_task": None}
+
+from datetime import date, timedelta, datetime
+import re
+from flask import jsonify, request
+
 @csrf.exempt
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
-    try:
-        data = request.get_json()
-        transcript = data.get('transcript', '').strip()
-        
-        if not transcript:
-            return jsonify({"message": "No speech detected", "success": False})
-        
-        global next_id
-        transcript_lower = transcript.lower()
-        
-        # ADD commands
-        if any(word in transcript_lower for word in ['add', 'create', 'new']):
-            for word in ['add', 'create', 'new']:
-                if word in transcript_lower:
-                    parts = transcript_lower.split(word, 1)
-                    if len(parts) > 1:
-                        task_name = parts[1].strip()
-                        # Clean up common words
-                        task_name = task_name.replace('task', '').replace('to my list', '').strip()
-                        if task_name:
-                            tasks.append({
-                                "id": next_id,
-                                "name": task_name,
-                                "completed": False,
-                                "due_date": None,
-                                "category": "Other"
-                            })
-                            next_id += 1
-                            return jsonify({"message": f"Added: {task_name}", "success": True})
-        
-        # DELETE commands - this was missing!
-        elif any(word in transcript_lower for word in ['delete', 'remove']):
-            # Extract what to delete
-            for word in ['delete', 'remove']:
-                if word in transcript_lower:
-                    parts = transcript_lower.split(word, 1)
-                    if len(parts) > 1:
-                        target = parts[1].strip()
-                        target = target.replace('task', '').replace('from my list', '').replace('in my task', '').strip()
-                        
-                        # Find task by name
-                        for i, task in enumerate(tasks):
-                            if target.lower() in task['name'].lower():
-                                removed_task = tasks.pop(i)
-                                return jsonify({"message": f"Deleted: {removed_task['name']}", "success": True})
-                        
-                        return jsonify({"message": f"Couldn't find task containing '{target}'", "success": False})
-        
-        # COMPLETE commands
-        elif any(word in transcript_lower for word in ['complete', 'done', 'finish']):
-            for task in tasks:
-                if not task['completed']:
-                    task['completed'] = True
-                    return jsonify({"message": f"Completed: {task['name']}", "success": True})
-            return jsonify({"message": "No tasks to complete", "success": False})
-        
-        return jsonify({"message": f"Heard '{transcript}' but couldn't understand the command", "success": False})
-        
-    except Exception as e:
-        return jsonify({"error": str(e), "success": False}), 500
+    data = request.get_json() or {}
+    transcript = (data.get("transcript") or "").strip()
+    tl = transcript.lower()
 
+    global next_id, conversation_state
+
+    def respond(message, success=False, reload=False, next_expected=None):
+        return jsonify({
+            "message": message,
+            "success": success,
+            "reload": reload,
+            "next_expected": next_expected
+        })
+
+    # Follow-up flow
+    pending = conversation_state.get("pending_task")
+    expecting = conversation_state.get("next_expected")
+
+    # 1) Expecting due date
+    if expecting == "due_date" and pending:
+        parsed_due = None
+        try:
+            if "today" in tl:
+                parsed_due = date.today()
+            elif "tomorrow" in tl:
+                parsed_due = date.today() + timedelta(days=1)
+            elif "in " in tl and " day" in tl:
+                m = re.search(r"in\s+(\d+)\s+day", tl)
+                if m:
+                    n = int(m.group(1))
+                    parsed_due = date.today() + timedelta(days=n)
+            else:
+                # Try YYYY-MM-DD
+                parsed_due = datetime.strptime(transcript, "%Y-%m-%d").date()
+        except Exception:
+            parsed_due = None
+
+        if parsed_due:
+            pending["due_date"] = parsed_due
+            conversation_state["next_expected"] = "category"
+            return respond(
+                f"Due date set to {parsed_due.isoformat()}. What category should I use? For example: Work, Personal, Study, Other.",
+                success=False,
+                reload=True,
+                next_expected="category"
+            )
+        else:
+            return respond(
+                "I couldn't parse the date. Say 'tomorrow', 'in 3 days', or a date like 2025-08-25.",
+                success=False,
+                reload=False,
+                next_expected="due_date"
+            )
+
+    # 2) Expecting category
+    if expecting == "category" and pending:
+        cat = None
+        for c in ["work", "personal", "study", "other", "health", "shopping", "finance", "school"]:
+            if c in tl:
+                cat = c.capitalize()
+                break
+        if not cat:
+            return respond(
+                "I didn't catch a category. Try: Work, Personal, Study, Other, Health, Shopping, Finance, or School.",
+                success=False,
+                reload=False,
+                next_expected="category"
+            )
+
+        pending["category"] = cat
+        conversation_state = {"next_expected": None, "pending_task": None}
+        return respond(
+            f"Category set to {cat}. All set!",
+            success=False,
+            reload=True,
+            next_expected=None
+        )
+
+    # New commands
+    # ADD
+    if any(w in tl for w in ["add ", "create ", "new "]):
+        base = None
+        for w in ["add", "create", "new"]:
+            if w in tl:
+                parts = tl.split(w, 1)
+                if len(parts) > 1:
+                    base = parts[1].strip()
+                    break
+        if not base:
+            return respond("I heard add, but not the task name. Say: add buy milk.", False, False, None)
+
+        clean = (
+            base.replace("task", "")
+                .replace("to my list", "")
+                .replace("in my list", "")
+                .strip(" .")
+        )
+        if not clean:
+            return respond("What should I add? Please say the task name.", False, False, None)
+
+        new_task = {
+            "id": next_id,
+            "name": clean,
+            "completed": False,
+            "due_date": None,
+            "category": "Other"
+        }
+        tasks.append(new_task)
+        next_id += 1
+
+        conversation_state = {"next_expected": "due_date", "pending_task": new_task}
+        return respond(
+            f"Got it! I added '{clean}'. Do you want to set a due date? You can say 'tomorrow', 'in 3 days', or 2025-08-25.",
+            success=True,
+            reload=True,
+            next_expected="due_date"
+        )
+
+    # DELETE
+    if any(w in tl for w in ["delete", "remove"]):
+        target = None
+        for w in ["delete", "remove"]:
+            if w in tl:
+                parts = tl.split(w, 1)
+                if len(parts) > 1:
+                    target = parts[1].strip()
+                    break
+        if not target:
+            return respond("What should I delete? Say: delete gym workout.", False, False, None)
+
+        target = (
+            target.replace("task", "")
+                  .replace("from my list", "")
+                  .replace("in my task", "")
+                  .strip(" .")
+        )
+        for i, t in enumerate(tasks):
+            if target.lower() in t["name"].lower():
+                removed = tasks.pop(i)
+                # Clear pending flow if it referenced removed task
+                if conversation_state.get("pending_task") and conversation_state["pending_task"]["id"] == removed["id"]:
+                    conversation_state = {"next_expected": None, "pending_task": None}
+                return respond(f"Deleted '{removed['name']}'.", True, True, None)
+
+        return respond(f"I couldn't find a task containing '{target}'.", False, False, None)
+
+    # COMPLETE
+    if any(w in tl for w in ["complete", "done", "finish", "mark as done"]):
+        m = re.search(r"task\s*(\d+)", tl)
+        if m:
+            tid = int(m.group(1))
+            t = next((x for x in tasks if x["id"] == tid), None)
+            if t:
+                t["completed"] = True
+                return respond(f"Marked task {tid} as complete: '{t['name']}'.", True, True, None)
+            return respond(f"I couldn't find task {tid}.", False, False, None)
+
+        for t in tasks:
+            if not t["completed"]:
+                t["completed"] = True
+                return respond(f"Completed '{t['name']}'.", True, True, None)
+
+        return respond("Looks like everything is already complete.", False, False, None)
+
+    # STATUS
+    if any(w in tl for w in ["what's on my list", "what is on my list", "read my tasks", "show tasks", "what do i need to do"]):
+        inc = [t for t in tasks if not t["completed"]]
+        if not tasks:
+            return respond("Your list is empty. Want me to add something?", False, False, None)
+        if not inc:
+            return respond("All tasks are complete. Nice work!", False, False, None)
+
+        titles = ", ".join([f"{t['id']}: {t['name']}" for t in inc[:5]])
+        more = "" if len(inc) <= 5 else f", and {len(inc)-5} more"
+        return respond(f"You have {len(inc)} tasks: {titles}{more}.", False, False, None)
+
+    # DEFAULT
+    return respond(f"I heard '{transcript}'. Try: add buy milk; delete gym; complete task 1.", False, False, None)
 
 
 # ----- WTForms: Task form definition -----

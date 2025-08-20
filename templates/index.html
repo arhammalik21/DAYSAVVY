@@ -141,6 +141,93 @@
     <div id="voiceStatus" class="mt-2 text-info"></div>
 </div>
 
+<!--Talk back with some questions-->
+<script>
+function speak(text) {
+  if (!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = 0.95;
+  u.pitch = 1.05;
+  u.volume = 1.0;
+  try { speechSynthesis.cancel(); } catch {}
+  speechSynthesis.speak(u);
+}
+
+function sendTranscript(transcript) {
+  const status = document.getElementById('voiceStatus');
+  fetch('/voice/command', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({transcript})
+  })
+  .then(r => r.json())
+  .then(data => {
+    status.textContent = data.message;
+    speak(data.message);
+
+    // 1) Auto-refresh after changes
+    if (data.reload) {
+      setTimeout(() => location.reload(), 300);
+      return; // stop; page will reload
+    }
+
+    // 2) Auto follow-up (due_date/category) without pressing again
+    if (data.next_expected) {
+      setTimeout(() => startVoiceRecognition(true), 600);
+    }
+  })
+  .catch(() => {
+    status.textContent = 'Network error.';
+    speak('Sorry, I had a network issue.');
+  });
+}
+
+function startVoiceRecognition(isFollowUp = false) {
+  const status = document.getElementById('voiceStatus');
+  const btn = document.getElementById('voiceBtn');
+
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    status.textContent = 'Speech recognition not supported. Please use Chrome.';
+    return;
+  }
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const rec = new Rec();
+  rec.lang = 'en-US';
+  rec.continuous = false;
+  rec.interimResults = false;
+
+  btn.classList.add('listening');
+  btn.disabled = true;
+  status.textContent = isFollowUp ? 'Okay, tell me…' : 'Speak your command…';
+
+  rec.start();
+
+  rec.onresult = (e) => {
+    const transcript = e.results[0].transcript;
+    status.textContent = `You said: "${transcript}"`;
+    sendTranscript(transcript);
+  };
+
+  rec.onerror = (e) => {
+    status.textContent = 'Speech error: ' + e.error;
+    speak('I could not hear that. Please try again.');
+    reset();
+  };
+
+  rec.onend = () => {
+    // Reset; if follow-up is needed, sendTranscript will re-open listening
+    reset();
+  };
+
+  function reset() {
+    btn.classList.remove('listening');
+    btn.disabled = false;
+  }
+}
+</script>
+
+
+
 <!-- Add Material Icons -->
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
 
