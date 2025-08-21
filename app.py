@@ -4,6 +4,8 @@ from flask_wtf import FlaskForm, CSRFProtect
 from wtforms import StringField, DateField, SelectField
 from wtforms.validators import DataRequired
 from datetime import date
+from datetime import date, timedelta, datetime
+import re
 import openai
 from gtts import gTTS
 import pygame
@@ -80,223 +82,203 @@ def find_task_by_id(task_id):
     return next((t for t in tasks if t["id"] == task_id), None)
 
 # ----- AI Voice Command Route -----
-# Add this in your app.py top-level (simple in-memory session)
-conversation_state = {"next_expected": None, "pending_task": None}
-STOP_WORDS = {"stop", "done", "cancel", "exit", "quit", "thank you", "thanks"}
-
-
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 from datetime import date, timedelta, datetime
 import re
-from flask import jsonify, request
 
-@csrf.exempt
+app = Flask(__name__)
+
+@app.template_filter('safe_date')
+def safe_date(value):
+    if not value:
+        return ''
+    # If it's already a string, return as-is
+    if isinstance(value, str):
+        return value
+    # If it's a datetime object, format it
+    try:
+        return value.strftime('%b %d, %Y')
+    except Exception:
+        return str(value)
+
+
+# Enable CORS - this fixes the connection errors
+CORS(app)
+
+# Add secret key for CSRF (newer Flask requirement)  
+app.config['SECRET_KEY'] = 'your-secret-key-here'
+
+# Your existing variables
+tasks = []
+next_id = 1
+
+# Voice assistant globals
+conversation_state = {"next_expected": None, "pending_task": None}
+STOP_WORDS = {"stop", "done", "cancel", "exit", "quit", "thanks"}
+
+# Your existing routes stay the same...
+
+from flask import session
+from flask import request, jsonify, session
+from datetime import date, timedelta
+
+# Ensure STOP_WORDS is defined elsewhere in your app
+# STOP_WORDS = ["stop", "cancel", "exit", "quit"]
+
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
-    # Read input safely
-    data = request.get_json() or {}
-    transcript = (data.get("transcript") or "").strip()
-    tl = transcript.lower()
+    global tasks, next_id
 
-    global next_id, conversation_state, tasks
+    try:
+        data = request.get_json() or {}
+        transcript = data.get("transcript", "").strip()
 
-    # Stop phrases end the continuous client loop
-    if any(sw in tl for sw in STOP_WORDS):
-        return jsonify({
-            "message": "Okay, stopping voice session. Tap AI Voice to start again.",
-            "success": False,
-            "reload": False,
-            "next_expected": None,
-            "stop_listening": True
-        })
+        if not transcript:
+            return jsonify({"message": "No speech detected.", "continue_listening": True})
 
-    def respond(message, success=False, reload=False, next_expected=None, stop=False):
-        return jsonify({
-            "message": message,
-            "success": success,
-            "reload": reload,
-            "next_expected": next_expected,
-            "stop_listening": stop
-        })
+        tl = transcript.lower().strip()
 
-    # Current follow-up state
-    pending = conversation_state.get("pending_task")
-    expecting = conversation_state.get("next_expected")
+        # Stop command
+        if any(word in tl for word in STOP_WORDS):
+            session.pop('conversation_state', None)
+            session.modified = True
+            return jsonify({"message": "Voice control stopped.", "continue_listening": False})
 
-    # 1) Expecting due date
-    if expecting == "due_date" and pending:
-        parsed_due = None
-        try:
+        # Get conversation state
+        conversation_state = session.get('conversation_state', {"next_expected": None, "pending_task": None})
+        pending = conversation_state.get("pending_task")
+        expecting = conversation_state.get("next_expected")
+
+        # Due date follow-up
+        if expecting == "due_date" and pending:
+            due_date = None
             if "today" in tl:
-                parsed_due = date.today()
+                due_date = date.today()
             elif "tomorrow" in tl:
-                parsed_due = date.today() + timedelta(days=1)
-            elif "in " in tl and " day" in tl:
-                m = re.search(r"in\s+(\d+)\s+day", tl)
-                if m:
-                    n = int(m.group(1))
-                    parsed_due = date.today() + timedelta(days=n)
+                due_date = date.today() + timedelta(days=1)
+            elif "skip" in tl:
+                conversation_state["next_expected"] = "category"
+                session['conversation_state'] = conversation_state
+                session.modified = True
+                return jsonify({
+                    "message": "No due date set. What category? Say Work, Personal, Study, Health, or Other.",
+                    "continue_listening": True
+                })
+
+            if due_date:
+                # Update task - store as string to avoid Jinja2 error
+                for task in tasks:
+                    if task["id"] == pending["id"]:
+                        task["due_date"] = due_date.strftime('%Y-%m-%d')
+                        break
+
+                conversation_state["next_expected"] = "category"
+                session['conversation_state'] = conversation_state
+                session.modified = True
+
+                return jsonify({
+                    "message": f"Due date set to {due_date.strftime('%B %d')}. What category? Say Work, Personal, Study, Health, or Other.",
+                    "continue_listening": True,
+                    "reload_page": True
+                })
             else:
-                # Try strict YYYY-MM-DD
-                parsed_due = datetime.strptime(transcript, "%Y-%m-%d").date()
-        except Exception:
-            parsed_due = None
+                return jsonify({
+                    "message": "Say 'today', 'tomorrow', or 'skip' for due date.",
+                    "continue_listening": True
+                })
 
-        if parsed_due:
-            pending["due_date"] = parsed_due
-            conversation_state["next_expected"] = "category"
-            return respond(
-                f"Due date set to {parsed_due.isoformat()}. What category should I use? For example: Work, Personal, Study, or Other.",
-                success=False,
-                reload=True,
-                next_expected="category"
-            )
-        else:
-            return respond(
-                "I couldn't parse the date. Say 'tomorrow', 'in 3 days', or a date like 2025-08-25.",
-                success=False,
-                reload=False,
-                next_expected="due_date"
-            )
+        # Category follow-up
+        if expecting == "category" and pending:
+            category = "Other"
+            if "work" in tl:
+                category = "Work"
+            elif "personal" in tl:
+                category = "Personal"
+            elif "study" in tl:
+                category = "Study"
+            elif "health" in tl:
+                category = "Health"
 
-    # 2) Expecting category
-    if expecting == "category" and pending:
-        cat = None
-        for c in ["work", "personal", "study", "other", "health", "shopping", "finance", "school"]:
-            if c in tl:
-                cat = c.capitalize()
-                break
+            # Update task
+            for task in tasks:
+                if task["id"] == pending["id"]:
+                    task["category"] = category
+                    break
 
-        if not cat:
-            return respond(
-                "I didn't catch a category. Try: Work, Personal, Study, Other, Health, Shopping, Finance, or School.",
-                success=False,
-                reload=False,
-                next_expected="category"
-            )
+            # Clear session
+            session.pop('conversation_state', None)
+            session.modified = True
 
-        pending["category"] = cat
-        conversation_state = {"next_expected": None, "pending_task": None}
-        return respond(
-            f"Category set to {cat}. All set! What next?",
-            success=False,
-            reload=True,
-            next_expected=None
-        )
+            return jsonify({
+                "message": f"Task '{pending['name']}' added with category {category}. What's next?",
+                "continue_listening": True,
+                "reload_page": True
+            })
 
-    # 3) New commands
+        # Add task
+        if "add" in tl:
+            parts = transcript.split("add", 1)
+            if len(parts) > 1:
+                task_name = parts[1].replace("task", "").strip()
+                if task_name:
+                    new_task = {
+                        "id": next_id,
+                        "name": task_name,
+                        "completed": False,
+                        "due_date": None,
+                        "category": "Other"
+                    }
+                    tasks.append(new_task)
+                    next_id += 1
 
-    # ADD / CREATE / NEW
-    if ("add" in tl) or ("create" in tl) or ("new" in tl):
-        # Pick the first keyword index
-        kw = None
-        idx = -1
-        for w in ["add", "create", "new"]:
-            i = tl.find(w)
-            if i != -1 and (idx == -1 or i < idx):
-                idx = i
-                kw = w
-        task_name = ""
-        if kw and idx != -1:
-            after = transcript[idx + len(kw):].strip()  # use original transcript for casing
-            task_name = (
-                after.replace("task", "")
-                     .replace("to my list", "")
-                     .replace("in my list", "")
-                     .strip(" .,:;")
-            )
+                    session['conversation_state'] = {
+                        "next_expected": "due_date",
+                        "pending_task": new_task
+                    }
+                    session.modified = True
 
-        if not task_name:
-            return respond("I heard add, but not the task name. Say: add buy milk.", False, False, None)
+                    return jsonify({
+                        "message": f"Adding '{task_name}'. Set due date? Say 'today', 'tomorrow', or 'skip'.",
+                        "continue_listening": True,
+                        "reload_page": True
+                    })
+            
+            return jsonify({
+                "message": "What should I add? Try saying 'add buy groceries'.",
+                "continue_listening": True
+            })
 
-        new_task = {
-            "id": next_id,
-            "name": task_name,
-            "completed": False,
-            "due_date": None,
-            "category": "Other"
-        }
-        tasks.append(new_task)
-        next_id += 1
+        # Skip follow-up
+        if "skip" in tl and expecting:
+            if expecting == "due_date":
+                conversation_state["next_expected"] = "category"
+                session['conversation_state'] = conversation_state
+                session.modified = True
+                return jsonify({
+                    "message": "No due date. What category? Say Work, Personal, Study, Health, or Other.",
+                    "continue_listening": True
+                })
+            elif expecting == "category":
+                session.pop('conversation_state', None)
+                session.modified = True
+                return jsonify({
+                    "message": "Category kept as Other. What's next?",
+                    "continue_listening": True,
+                    "reload_page": True
+                })
 
-        conversation_state["pending_task"] = new_task
-        conversation_state["next_expected"] = "due_date"
+        return jsonify({
+            "message": f"I heard: '{transcript}'. Try: add task, complete task, list tasks, or stop.",
+            "continue_listening": True
+        })
 
-        return respond(
-            f"Got it! I added '{task_name}'. Do you want to set a due date? You can say 'tomorrow', 'in 3 days', or 2025-08-25.",
-            success=True,
-            reload=True,
-            next_expected="due_date"
-        )
+    except Exception as e:
+        print(f"[ERROR] {str(e)}")
+        return jsonify({"message": "Server error occurred.", "continue_listening": True}), 500
 
-    # DELETE / REMOVE
-    if ("delete" in tl) or ("remove" in tl):
-        target = None
-        # find earliest keyword and slice after it
-        kw = None
-        idx = -1
-        for w in ["delete", "remove"]:
-            i = tl.find(w)
-            if i != -1 and (idx == -1 or i < idx):
-                idx = i
-                kw = w
-        if kw and idx != -1:
-            after = transcript[idx + len(kw):].strip()
-            target = (
-                after.replace("task", "")
-                     .replace("from my list", "")
-                     .replace("in my task", "")
-                     .strip(" .,:;")
-            )
 
-        if not target:
-            return respond("What should I delete? Say: delete gym workout.", False, False, None)
 
-        for i, t in enumerate(tasks):
-            if target.lower() in t["name"].lower():
-                removed = tasks.pop(i)
-                # Clear pending flow if it referenced the removed task
-                if conversation_state.get("pending_task") and conversation_state["pending_task"]["id"] == removed["id"]:
-                    conversation_state = {"next_expected": None, "pending_task": None}
-                return respond(f"Deleted '{removed['name']}'.", True, True, None)
-
-        return respond(f"I couldn't find a task containing '{target}'.", False, False, None)
-
-    # COMPLETE / DONE / FINISH
-    if ("complete" in tl) or ("done" in tl) or ("finish" in tl) or ("mark as done" in tl):
-        m = re.search(r"task\s*(\d+)", tl)
-        if m:
-            tid = int(m.group(1))
-            t = next((x for x in tasks if x["id"] == tid), None)
-            if t:
-                t["completed"] = True
-                return respond(f"Marked task {tid} as complete: '{t['name']}'.", True, True, None)
-            return respond(f"I couldn't find task {tid}.", False, False, None)
-
-        # fallback: first incomplete
-        for t in tasks:
-            if not t["completed"]:
-                t["completed"] = True
-                return respond(f"Completed '{t['name']}'.", True, True, None)
-
-        return respond("Looks like everything is already complete.", False, False, None)
-
-    # STATUS / LIST
-    if ("what's on my list" in tl) or ("what is on my list" in tl) or ("read my tasks" in tl) or ("show tasks" in tl) or ("what do i need to do" in tl):
-        inc = [t for t in tasks if not t["completed"]]
-        if not tasks:
-            return respond("Your list is empty. Want me to add something?", False, False, None)
-        if not inc:
-            return respond("All tasks are complete. Nice work!", False, False, None)
-
-        titles = ", ".join([f"{t['id']}: {t['name']}" for t in inc[:5]])
-        more = "" if len(inc) <= 5 else f", and {len(inc)-5} more"
-        return respond(f"You have {len(inc)} tasks: {titles}{more}.", False, False, None)
-
-    # DEFAULT
-    return respond(
-        f"I heard '{transcript}'. Try: add buy milk; delete gym; complete task 1.",
-        False, False, None
-    )
 
 # ----- WTForms: Task form definition -----
 class TaskForm(FlaskForm):

@@ -142,170 +142,74 @@
 </div>
 
 <!--Talk back with some questions-->
+<div class="mb-3">
+    <button id="voiceBtn" class="btn btn-primary" onclick="startVoiceControl()">🎤 Start Voice</button>
+    <button id="stopBtn" class="btn btn-danger" onclick="stopVoiceControl()" style="display: none;">⏹ Stop</button>
+    <div id="voiceStatus" class="mt-2 text-muted">Click Start Voice to begin</div>
+</div>
+
+
 <script>
-let voiceActive = false;
-let rec = null;
-let ttsSpeaking = false;
+let isListening = false;
+let recognition = null;
+let shouldContinue = false;
 
-function getRecognizer() {
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    return null;
-  }
-  if (rec) return rec;
-  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  rec = new Rec();
-  rec.lang = 'en-US';
-  rec.continuous = false;
-  rec.interimResults = false;
-
-  rec.onstart = () => {
-    const btn = document.getElementById('voiceBtn');
-    const status = document.getElementById('voiceStatus');
-    btn.classList.add('listening');
-    btn.disabled = true;
-    status.textContent = 'Listening… say a command. Say "stop" to end.';
-  };
-
-  rec.onresult = (e) => {
-    const transcript = e.results[0].transcript;
-    document.getElementById('voiceStatus').textContent = `You said: "${transcript}"`;
-    // Send and then restart listening after TTS reply finishes
-    sendTranscript(transcript);
-  };
-
-  rec.onerror = (e) => {
-    const status = document.getElementById('voiceStatus');
-    status.textContent = 'Speech error: ' + e.error;
-    // Back off a bit, then continue if still active and not speaking
-    if (voiceActive && !ttsSpeaking) {
-      setTimeout(() => safeStartListen(true), 350);
-    }
-  };
-
-  rec.onend = () => {
-    const btn = document.getElementById('voiceBtn');
-    btn.classList.remove('listening');
-    btn.disabled = false;
-    // Do not auto-start here if TTS is speaking; TTS callback will handle restart
-    if (voiceActive && !ttsSpeaking) {
-      setTimeout(() => safeStartListen(true), 200);
-    }
-  };
-
-  return rec;
-}
-
-function safeStartListen(isFollowUp = false) {
-  const status = document.getElementById('voiceStatus');
-  const recognizer = getRecognizer();
-  if (!recognizer) {
-    status.textContent = 'Speech recognition not supported. Please use Chrome.';
-    voiceActive = false;
-    return;
-  }
-  if (ttsSpeaking) return; // wait for TTS to finish
-  try {
-    recognizer.start();
-  } catch (err) {
-    // If start too soon, retry once shortly
-    setTimeout(() => {
-      try { recognizer.start(); } catch {}
-    }, 300);
-  }
-}
-
-function speak(text, onEnd) {
-  if (!('speechSynthesis' in window)) {
-    if (onEnd) onEnd();
-    return;
-  }
-  try { speechSynthesis.cancel(); } catch {}
-  const u = new SpeechSynthesisUtterance(text || '');
-  u.rate = 0.95;
-  u.pitch = 1.05;
-  u.volume = 1.0;
-  ttsSpeaking = true;
-  u.onend = () => {
-    ttsSpeaking = false;
-    if (onEnd) onEnd();
-  };
-  speechSynthesis.speak(u);
-}
-
-function sendTranscript(transcript) {
-  fetch('/voice/command', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({transcript})
-  })
-  .then(r => r.json())
-  .then(data => {
-    const status = document.getElementById('voiceStatus');
-    status.textContent = data.message || '';
-
-    // Speak reply, then control loop
-    speak(data.message || '', () => {
-      if (!voiceActive) return;
-
-      if (data.reload) {
-        // Allow a clean UI update
-        setTimeout(() => location.reload(), 150);
+function startVoiceControl() {
+    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+        document.getElementById('voiceStatus').textContent = 'Speech not supported. Use Chrome.';
         return;
-      }
-      if (data.stop_listening) {
-        voiceActive = false;
-        return;
-      }
-      // Continue loop
-      safeStartListen(true);
-    });
-  })
-  .catch(() => {
-    const status = document.getElementById('voiceStatus');
-    status.textContent = 'Network error.';
-    speak('Sorry, I had a network issue.', () => {
-      if (voiceActive) safeStartListen(true);
-    });
-  });
+    }
+    
+    shouldContinue = true;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    
+    recognition.onresult = (event) => {
+        const transcript = event.results[event.results.length - 1][0].transcript.trim();
+        if (transcript) {
+            document.getElementById('voiceStatus').textContent = `Processing: "${transcript}"`;
+            
+            fetch('/voice/command', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ transcript })
+            })
+            .then(r => r.json())
+            .then(data => {
+                document.getElementById('voiceStatus').textContent = data.message;
+                if ('speechSynthesis' in window) {
+                    const utterance = new SpeechSynthesisUtterance(data.message);
+                    utterance.onend = () => {
+                        if (data.reload_page) setTimeout(() => location.reload(), 500);
+                        if (!data.continue_listening) stopVoiceControl();
+                    };
+                    speechSynthesis.speak(utterance);
+                }
+            });
+        }
+    };
+    
+    recognition.onend = () => {
+        isListening = false;
+        if (shouldContinue) setTimeout(() => { try { recognition.start(); } catch {} }, 500);
+    };
+    
+    recognition.start();
+    document.getElementById('voiceBtn').style.display = 'none';
+    document.getElementById('stopBtn').style.display = 'inline-block';
 }
 
-function toggleAIVoice() {
-  voiceActive = !voiceActive;
-  const btn = document.getElementById('voiceBtn');
-  const status = document.getElementById('voiceStatus');
-
-  if (voiceActive) {
-    status.textContent = 'Starting AI voice…';
-    try { speechSynthesis.cancel(); } catch {}
-    ttsSpeaking = false;
-    safeStartListen(false);
-    btn.textContent = 'AI Voice (On)';
-  } else {
-    status.textContent = 'Stopped.';
-    try { speechSynthesis.cancel(); } catch {}
-    if (rec) {
-      try { rec.stop(); } catch {}
-    }
-    btn.textContent = 'AI Voice';
-  }
-  then(data => {
-  status.textContent = data.message || '';
-  speak(data.message || '', () => {
-    if (!voiceActive) return;
-    if (data.reload) {
-      setTimeout(() => location.reload(), 150);
-      return;
-    }
-    if (data.stop_listening) {
-      voiceActive = false;
-      return;
-    }
-    safeStartListen(true);
-  });
-})
+function stopVoiceControl() {
+    shouldContinue = false;
+    if (recognition) recognition.stop();
+    document.getElementById('voiceBtn').style.display = 'inline-block';
+    document.getElementById('stopBtn').style.display = 'none';
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
 }
 </script>
-
 
 
 
@@ -358,12 +262,6 @@ function toggleAIVoice() {
     100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
 }
 </style>
-
-<div class="voice-control mb-3">
-  <button id="voiceBtn" class="btn btn-primary" onclick="toggleAIVoice()">AI Voice</button>
-  <div id="voiceStatus" class="mt-2 text-info"></div>
-</div>
-
 
 <!--JS codes for AI voice command-->
 <script>
