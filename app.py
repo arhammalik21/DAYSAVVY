@@ -17,6 +17,7 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = "arham0564"
 csrf = CSRFProtect(app)
 
+
 # ----- Load Whisper model and AI Assistant -----
 print("Loading Whisper model...")
 

@@ -47,32 +47,60 @@
 </head>
 
 <body>
-  <!-- App title -->
-  <h1 class="display-4 text-primary text-center my-4" style="letter-spacing:2px;font-weight:700;">DaySavvy</h1>
 
-<!--Tagline-->
-<div class="title-tagline-container">
-  <div class="tagline">A SuperAI that can save your day</div>
+<!--LOGO WITH TITLE AND TAGLINE ALIGNED HORIZONTALLY-->
+<div class="header-section">
+  <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo" class="header-logo">
+  <div class="header-text">
+    <h1 class="app-title">DaySavvy</h1>
+    <div class="app-tagline">A SuperAI that can save your day</div>
+  </div>
 </div>
+
+
+
+
 <style>
-.title-tagline-container {
-    text-align: center; /* Centers both title and tagline */
-    margin: 0 auto; /* Centers the container itself */
+.header-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px; /* smaller gap for closer alignment */
+  margin: 40px 0;
 }
 
-.title-tagline-container h1 {
-    margin-bottom: 0.2rem;
-    color: inherit; /* Uses your existing title color */
+.header-logo {
+  width: 200px; /* much bigger logo */
+  height: 200px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
-.tagline {
-    color: #6a4c93 !important; /* Light blue color */
-    font-size: 1.2rem; 
-    font-weight: 500;
-    margin: 0;
-    line-height: 1.4;
+.header-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.app-title {
+  font-size: 3rem;
+  font-weight: 700;
+  color: #0d6efd;
+  margin: 0 0 5px 0;
+  letter-spacing: 2px;
+  line-height: 1.1;
+}
+
+.app-tagline {
+  color: #6a4c93;
+  font-size: 1.2rem;
+  font-weight: 500;
+  margin: 0;
+  line-height: 1.2;
 }
 </style>
+
 
   <!-- Minimal navbar with theme toggle aligned right -->
   <nav class="navbar px-3 mb-2 bg-transparent">
