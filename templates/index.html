@@ -190,27 +190,26 @@
       </div>
     </div>
 
-    <!--AI Voice command-->
-<div class="voice-control mb-3">
-    <button id="voiceBtn" class="btn btn-ai-mic" onclick="startVoiceRecognition()">
-        <i class="material-icons-outlined">settings_voice</i>
+
+
+<!--AI voice command-->
+<div class="mb-3">
+    <button id="voiceBtn" class="btn btn-ai-mic" onclick="startVoiceControl()">
+        <i class="material-icons-outlined">mic</i>
         <span class="mic-text">AI Voice</span>
     </button>
-    <div id="voiceStatus" class="mt-2 text-info"></div>
-</div>
-
-<!--Talk back with some questions-->
-<div class="mb-3">
-    <button id="voiceBtn" class="btn btn-primary" onclick="startVoiceControl()">🎤 Start Voice</button>
-    <button id="stopBtn" class="btn btn-danger" onclick="stopVoiceControl()" style="display: none;">⏹ Stop</button>
+    <button id="stopBtn" class="btn btn-danger ms-2" onclick="stopVoiceControl()" style="display: none;">
+        <i class="material-icons-outlined">stop</i>
+        Stop
+    </button>
     <div id="voiceStatus" class="mt-2 text-muted">Click Start Voice to begin</div>
 </div>
 
+<!--Talk back with some questions-->
 
 <script>
 let isListening = false;
 let recognition = null;
-let shouldContinue = false;
 
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -218,7 +217,16 @@ function startVoiceControl() {
         return;
     }
     
-    shouldContinue = true;
+    isListening = true;
+    document.getElementById('voiceBtn').classList.add('listening');
+    document.getElementById('stopBtn').style.display = 'inline-block';
+    
+    startListening();
+}
+
+function startListening() {
+    if (!isListening) return;
+    
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -227,8 +235,9 @@ function startVoiceControl() {
     
     recognition.onresult = (event) => {
         const transcript = event.results[event.results.length - 1][0].transcript.trim();
+        
         if (transcript) {
-            document.getElementById('voiceStatus').textContent = `Processing: "${transcript}"`;
+            document.getElementById('voiceStatus').textContent = `Processing: ${transcript}`;
             
             fetch('/voice/command', {
                 method: 'POST',
@@ -238,36 +247,52 @@ function startVoiceControl() {
             .then(r => r.json())
             .then(data => {
                 document.getElementById('voiceStatus').textContent = data.message;
+                
+                if (data.reload_page) {
+                    setTimeout(() => location.reload(), 2000);
+                }
+                
                 if ('speechSynthesis' in window) {
+                    speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(data.message);
-                    utterance.onend = () => {
-                        if (data.reload_page) setTimeout(() => location.reload(), 500);
-                        if (!data.continue_listening) stopVoiceControl();
-                    };
                     speechSynthesis.speak(utterance);
                 }
+            })
+            .catch(error => {
+                document.getElementById('voiceStatus').textContent = 'Command failed';
             });
         }
     };
     
     recognition.onend = () => {
-        isListening = false;
-        if (shouldContinue) setTimeout(() => { try { recognition.start(); } catch {} }, 500);
+        if (isListening) {
+            setTimeout(startListening, 100);
+        }
+    };
+    
+    recognition.onerror = () => {
+        if (isListening) {
+            setTimeout(startListening, 500);
+        }
     };
     
     recognition.start();
-    document.getElementById('voiceBtn').style.display = 'none';
-    document.getElementById('stopBtn').style.display = 'inline-block';
+    document.getElementById('voiceStatus').textContent = 'Listening...';
 }
 
 function stopVoiceControl() {
-    shouldContinue = false;
+    isListening = false;
+    
     if (recognition) recognition.stop();
-    document.getElementById('voiceBtn').style.display = 'inline-block';
-    document.getElementById('stopBtn').style.display = 'none';
     if ('speechSynthesis' in window) speechSynthesis.cancel();
+    
+    document.getElementById('voiceBtn').classList.remove('listening');
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('voiceStatus').textContent = 'Voice control stopped';
 }
 </script>
+
+
 
 
 
@@ -318,6 +343,29 @@ function stopVoiceControl() {
     0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
     70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
     100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+}
+
+#stopBtn {
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+    border: none;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 50px;
+    font-weight: bold;
+    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#stopBtn:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(135deg, #ee5a24 0%, #ff6b6b 100%);
+}
+#stopBtn i {
+    font-size: 18px;
 }
 </style>
 

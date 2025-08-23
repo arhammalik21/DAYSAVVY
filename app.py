@@ -118,6 +118,9 @@ app.config['SECRET_KEY'] = 'daysavvy-secret-key-2025-change-in-production'
 tasks = []
 next_id = 1
 STOP_WORDS = {"stop", "done", "cancel", "exit", "quit", "thanks"}
+app.before_request
+def make_session_permanent():
+    session.permanent = True
 
 class TaskForm(FlaskForm):
     task = StringField('Task Name', validators=[DataRequired()])
@@ -203,7 +206,7 @@ def edit_task(task_id):
         if task["id"] == task_id:
             task_to_edit = task
             break
-    
+
     if not task_to_edit:
         return redirect(url_for('index'))
     
@@ -245,7 +248,7 @@ def voice_command():
         tl = transcript.lower().strip()
         print(f"[VOICE] Received: '{transcript}'")
         
-        # Stop command
+        # STOP COMMAND - terminates voice control
         if any(word in tl for word in STOP_WORDS):
             session.pop('conversation_state', None)
             return jsonify({
@@ -253,7 +256,7 @@ def voice_command():
                 "continue_listening": False
             })
         
-        # Get conversation state
+        # GET CONVERSATION STATE - handles multi-step task creation
         conversation_state = session.get('conversation_state', {
             "next_expected": None, 
             "pending_task": None
@@ -263,7 +266,7 @@ def voice_command():
         
         print(f"[DEBUG] Expecting: {expecting}, Pending: {bool(pending)}")
         
-        # Handle due date follow-up
+        # HANDLE DUE DATE FOLLOW-UP - second step in task creation
         if expecting == "due_date" and pending:
             due_date = None
             
@@ -281,6 +284,7 @@ def voice_command():
                 })
             
             if due_date:
+                # Update the task with due date
                 for task in tasks:
                     if task["id"] == pending["id"]:
                         task["due_date"] = due_date.strftime('%Y-%m-%d')
@@ -301,10 +305,11 @@ def voice_command():
                     "continue_listening": True
                 })
         
-        # Handle category follow-up
+        # HANDLE CATEGORY FOLLOW-UP - final step in task creation
         if expecting == "category" and pending:
             category = "Other"
             
+            # Map voice input to categories
             if "work" in tl:
                 category = "Work"
             elif "personal" in tl:
@@ -314,6 +319,7 @@ def voice_command():
             elif "health" in tl or "fitness" in tl:
                 category = "Health"
             
+            # Update task with category and complete creation
             for task in tasks:
                 if task["id"] == pending["id"]:
                     task["category"] = category
@@ -328,7 +334,55 @@ def voice_command():
                 "reload_page": True
             })
         
-        # Handle add task - FIXED BUG HERE
+        # HANDLE DELETE COMMANDS - delete tasks by name (FIXED INDENTATION)
+        if "delete" in tl or "remove" in tl:
+            # Extract task name from command
+            task_name = ""
+            if "delete" in tl:
+                parts = tl.split("delete", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()
+            elif "remove" in tl:
+                parts = tl.split("remove", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()  # FIXED: was parts
+            
+            # Check if task_name is not empty before proceeding
+            if task_name and task_name.strip():
+                # Find and delete task by name (partial match)
+                deleted_task = None
+                for i, task in enumerate(tasks):
+                    # Added safety check for task['name']
+                    if task.get('name') and task_name.lower() in task['name'].lower():
+                        deleted_task = tasks.pop(i)
+                        break
+                
+                if deleted_task:
+                    return jsonify({
+                        "message": f"Deleted '{deleted_task['name']}' successfully!",
+                        "continue_listening": True,
+                        "reload_page": True
+                    })
+                else:
+                    # List available tasks if no match found
+                    if tasks:
+                        task_names = [task['name'] for task in tasks[:3] if task.get('name')]
+                        return jsonify({
+                            "message": f"Could not find task '{task_name}'. You have: {', '.join(task_names)}",
+                            "continue_listening": True
+                        })
+                    else:
+                        return jsonify({
+                            "message": "You have no tasks to delete.",
+                            "continue_listening": True
+                        })
+            else:
+                return jsonify({
+                    "message": "What should I delete? Say 'delete gym' or 'remove shopping'.",
+                    "continue_listening": True
+                })
+
+        # HANDLE ADD TASK - create new tasks
         if "add" in tl or "create" in tl:
             task_name = ""
             if "add" in tl:
@@ -338,9 +392,10 @@ def voice_command():
             elif "create" in tl:
                 parts = tl.split("create", 1)
                 if len(parts) > 1:
-                    task_name = parts[1].replace("task", "").strip()  # FIXED: was parts[2]
+                    task_name = parts[1].replace("task", "").strip()
             
             if task_name:
+                # Create new task and start conversation flow
                 new_task = {
                     "id": next_id,
                     "name": task_name.title(),
@@ -351,6 +406,7 @@ def voice_command():
                 tasks.append(new_task)
                 next_id += 1
                 
+                # Set up conversation state for follow-up questions
                 session['conversation_state'] = {
                     "next_expected": "due_date",
                     "pending_task": new_task
@@ -358,48 +414,86 @@ def voice_command():
                 session.modified = True
                 
                 return jsonify({
-                    "message": f"Adding '{task_name.title()}'. When is this due? Say 'today', 'tomorrow', or 'skip'.",
-                    "continue_listening": True,
-                    "reload_page": True
-                })
+    "message": f"Adding '{task_name.title()}'. When is this due? Say 'today', 'tomorrow', or 'skip'.",
+    "continue_listening": True
+})
+
             else:
                 return jsonify({
                     "message": "What task should I add? Try saying 'add buy groceries'.",
                     "continue_listening": True
                 })
         
-        # Handle complete task
-        if "complete" in tl or "finish" in tl:
+        # HANDLE COMPLETE TASK - mark tasks as done (FIXED)
+        if "complete" in tl or "finish" in tl or "done" in tl:
             if not tasks:
                 return jsonify({
                     "message": "You have no tasks to complete.",
                     "continue_listening": True
                 })
             
-            # Find task by name
-            completed_task = None
-            for task in tasks:
-                if not task['completed'] and task['name'].lower() in tl:
-                    task['completed'] = True
-                    completed_task = task
-                    break
+            # Extract task name from command
+            task_name = ""
+            if "complete" in tl:
+                parts = tl.split("complete", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()
+            elif "finish" in tl:
+                parts = tl.split("finish", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()
+            elif "done" in tl:
+                parts = tl.split("done", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()
             
-            if completed_task:
-                return jsonify({
-                    "message": f"Excellent! Task '{completed_task['name']}' marked as complete!",
-                    "continue_listening": True,
-                    "reload_page": True
-                })
+            if task_name and task_name.strip():
+                # Find task by name and mark as complete
+                completed_task = None
+                for task in tasks:
+                    if (task.get('name') and 
+                        not task.get('completed', False) and 
+                        task_name.lower() in task['name'].lower()):
+                        task['completed'] = True
+                        completed_task = task
+                        break
+                
+                if completed_task:
+                    return jsonify({
+                        "message": f"Excellent! Task '{completed_task['name']}' marked as complete!",
+                        "continue_listening": True,
+                        "reload_page": True
+                    })
+                else:
+                    # List available incomplete tasks
+                    incomplete_tasks = [task for task in tasks if task.get('name') and not task.get('completed', False)]
+                    if incomplete_tasks:
+                        task_names = [task['name'] for task in incomplete_tasks[:3]]
+                        return jsonify({
+                            "message": f"Could not find incomplete task '{task_name}'. You have: {', '.join(task_names)}",
+                            "continue_listening": True
+                        })
+                    else:
+                        return jsonify({
+                            "message": "You have no incomplete tasks.",
+                            "continue_listening": True
+                        })
             else:
-                incomplete_tasks = [task for task in tasks if not task['completed']]
+                # No task name specified - list available tasks
+                incomplete_tasks = [task for task in tasks if task.get('name') and not task.get('completed', False)]
                 if incomplete_tasks:
                     task_names = [task['name'] for task in incomplete_tasks[:3]]
                     return jsonify({
                         "message": f"Which task should I complete? You have: {', '.join(task_names)}",
                         "continue_listening": True
                     })
+                else:
+                    return jsonify({
+                        "message": "You have no tasks to complete.",
+                        "continue_listening": True
+                    })
         
-        # Handle list tasks
+        # HANDLE LIST TASKS - show current tasks
         if "list" in tl or "show" in tl:
             if not tasks:
                 return jsonify({
@@ -407,14 +501,15 @@ def voice_command():
                     "continue_listening": True
                 })
             
-            incomplete_tasks = [task for task in tasks if not task['completed']]
+            incomplete_tasks = [task for task in tasks if not task.get('completed', False)]
             if not incomplete_tasks:
                 return jsonify({
                     "message": "All tasks are complete! Great job!",
                     "continue_listening": True
                 })
             
-            task_names = [task['name'] for task in incomplete_tasks[:3]]
+            # List up to 3 tasks to avoid long responses
+            task_names = [task['name'] for task in incomplete_tasks[:3] if task.get('name')]
             message = f"You have {len(incomplete_tasks)} tasks: " + ", ".join(task_names)
             if len(incomplete_tasks) > 3:
                 message += f" and {len(incomplete_tasks) - 3} more."
@@ -424,7 +519,7 @@ def voice_command():
                 "continue_listening": True
             })
         
-        # Handle skip during conversation
+        # HANDLE SKIP DURING CONVERSATION - skip optional steps
         if "skip" in tl and expecting:
             if expecting == "due_date":
                 conversation_state["next_expected"] = "category"
@@ -443,9 +538,9 @@ def voice_command():
                     "reload_page": True
                 })
         
-        # Default response
+        # DEFAULT RESPONSE - when command not recognized
         return jsonify({
-            "message": f"I heard: '{transcript}'. Try: 'add [task]', 'complete [task]', 'list tasks', or 'stop'.",
+            "message": f"I heard: '{transcript}'. Try: 'add [task]', 'delete [task]', 'complete [task]', 'list tasks', or 'stop'.",
             "continue_listening": True
         })
     
@@ -456,13 +551,63 @@ def voice_command():
             "continue_listening": True
         }), 500
 
-# API Routes
+# LEGACY DELETE TASK ROUTE - kept for compatibility (FIXED)
+@app.route('/voice/delete-task', methods=['POST'])
+def voice_delete_task():
+    """Legacy delete task endpoint - kept for backward compatibility"""
+    data = request.get_json()
+    task_identifier = data.get('task_identifier') or data.get('task_name')
+    
+    try:
+        deleted_task = None
+        
+        if not task_identifier:
+            return jsonify({
+                'message': "No task specified to delete",
+                'reload_page': False,
+                'continue_listening': True
+            }), 400
+        
+        # Check if identifier is numeric (task ID) or text (task name)
+        if str(task_identifier).isdigit():
+            # Delete by ID
+            task_id = int(task_identifier)
+            for i, task in enumerate(tasks):
+                if task.get('id') == task_id:
+                    deleted_task = tasks.pop(i)
+                    break
+            message = f"Task {task_id} deleted" if deleted_task else f"Task {task_id} not found"
+        else:
+            # Delete by name (partial match)
+            for i, task in enumerate(tasks):
+                if task.get('name') and str(task_identifier).lower() in task['name'].lower():
+                    deleted_task = tasks.pop(i)
+                    break
+            message = f"Deleted '{deleted_task['name']}'" if deleted_task else f"Task '{task_identifier}' not found"
+        
+        return jsonify({
+            'message': message,
+            'reload_page': True,
+            'continue_listening': True
+        })
+        
+    except Exception as e:
+        print(f"[ERROR] Delete task error: {str(e)}")
+        return jsonify({
+            'message': f"Error deleting task: {str(e)}",
+            'reload_page': False,
+            'continue_listening': True
+        }), 500
+
+# API ROUTES (unchanged)
 @app.route("/api/tasks", methods=["GET"])
 def get_tasks():
+    """Get all tasks via REST API"""
     return jsonify(tasks)
 
 @app.route("/api/tasks", methods=["POST"])
 def add_task_api():
+    """Add new task via REST API"""
     global next_id
     data = request.get_json()
     if not data or not data.get('name'):
@@ -481,6 +626,7 @@ def add_task_api():
 
 @app.route("/api/tasks/<int:task_id>", methods=["PUT"])
 def update_task_api(task_id):
+    """Update existing task via REST API"""
     data = request.get_json()
     for task in tasks:
         if task["id"] == task_id:
@@ -490,6 +636,7 @@ def update_task_api(task_id):
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def delete_task_api(task_id):
+    """Delete task via REST API"""
     global tasks
     original_length = len(tasks)
     tasks = [task for task in tasks if task["id"] != task_id]
@@ -502,7 +649,6 @@ if __name__ == '__main__':
     print("Voice commands available at: /voice/command")
     print("Main interface at: http://localhost:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)
-
 
 # ----- WTForms: Task form definition -----
 class TaskForm(FlaskForm):
@@ -636,3 +782,4 @@ def complete_task(task_id):
 if __name__ == "__main__":
     print("AI Task Manager starting up...")
     app.run(debug=True)
+
