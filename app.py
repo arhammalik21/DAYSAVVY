@@ -565,19 +565,59 @@ def index():
 # ----- Edit task -----
 @app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
+    """Edit a task via web interface"""
+    # Find the task
     task = next((t for t in tasks if t["id"] == task_id), None)
     if not task:
-        abort(404)
-
-    form = TaskForm(obj=task)
-    if request.method == "POST" and form.validate_on_submit():
-        task["name"] = form.task.data.strip()
-        task["due_date"] = form.due_date.data
-        task["category"] = form.category.data
-        flash("Task updated!", "info")
+        flash("Task not found!", "danger")
         return redirect(url_for("index"))
 
-    return render_template("edit.html", form=form, task=task)
+    form = TaskForm()
+    
+    # Handle form submission (POST)
+    if request.method == "POST" and form.validate_on_submit():
+        task["name"] = form.task.data.strip()
+        task["due_date"] = form.due_date.data.strftime('%Y-%m-%d') if form.due_date.data else None
+        task["category"] = form.category.data
+        flash("Task updated successfully!", "success")
+        return redirect(url_for("index"))
+    
+    # Pre-populate form fields for GET request
+    if request.method == "GET":
+        form.task.data = task["name"]
+        if task.get("due_date"):
+            try:
+                # Convert string date to date object for form
+                form.due_date.data = datetime.strptime(task["due_date"], '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                pass
+        form.category.data = task.get("category", "Other")
+    
+    return render_template("edit_task.html", form=form, task=task)
+
+# ----- Delete task -----
+@app.route("/delete/<int:task_id>", methods=['POST'])
+def delete_task(task_id):
+    global tasks
+    updated = [t for t in tasks if t["id"] != task_id]
+    if len(updated) == len(tasks):
+        abort(404)
+    
+    tasks = updated
+    flash("Task deleted.", "warning")
+    return redirect(url_for("index"))
+
+@app.route("/complete/<int:task_id>", methods=['POST'])
+def complete_task(task_id):
+    global tasks
+    for task in tasks:
+        if task["id"] == task_id:
+            task["completed"] = True  # or however you mark completion
+            break
+    flash("Task completed!", "success")
+    return redirect(url_for("index"))
+
+
 
 # ----- Mark task as complete -----
 @app.route("/complete/<int:task_id>")
@@ -590,18 +630,6 @@ def complete_task(task_id):
     else:
         abort(404)
 
-    return redirect(url_for("index"))
-
-# ----- Delete task -----
-@app.route("/delete/<int:task_id>")
-def delete_task(task_id):
-    global tasks
-    updated = [t for t in tasks if t["id"] != task_id]
-    if len(updated) == len(tasks):
-        abort(404)
-
-    tasks = updated
-    flash("Task deleted.", "warning")
     return redirect(url_for("index"))
 
 # ----- Entry point -----

@@ -561,7 +561,7 @@ function startVoiceRecognition() {
     {% set completed_tasks  = tasks | selectattr('completed', 'equalto', True)  | list %}
 
     <!-- Incomplete Tasks Section -->
-    <h6 class="mt-3">Incomplete</h6>
+<h6 class="mt-3">Incomplete</h6>
 <div class="row">
   {% if incomplete_tasks %}
     {% for task in incomplete_tasks %}
@@ -584,15 +584,15 @@ function startVoiceRecognition() {
             <div>
               <!-- Complete - POST method -->
               <form method="POST" action="{{ url_for('complete_task', task_id=task.id) }}" style="display: inline;">
-                  <button type="submit" class="btn btn-success btn-sm me-1">Complete</button>
+                <button type="submit" class="btn btn-success btn-sm me-1">Complete</button>
               </form>
               
               <!-- Edit - GET method -->
               <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
               
-              <!-- Delete - POST method -->
+              <!-- Delete - POST method (FIXED) -->
               <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" style="display: inline;">
-                  <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this task?');">Delete</button>
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this task?');">Delete</button>
               </form>
             </div>
           </div>
@@ -604,39 +604,38 @@ function startVoiceRecognition() {
   {% endif %}
 </div>
 
-
-
-    <!-- Completed Tasks Section -->
-    <h6 class="mt-4">Completed</h6>
-    <div class="row">
-      {% if completed_tasks %}
-        {% for task in completed_tasks %}
-          <div class="col-12">
-            <div class="card bg-light shadow-sm">
-              <div class="card-body d-flex justify-content-between align-items-center">
-                <span class="completed-task">
-                  <strong>{{ task.name }}</strong>
-                  {% if task.due_date %}
-                    <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
-                  {% endif %}
-                  <span class="badge bg-info text-dark ms-2">{{ task.category }}</span>
-                </span>
-                <div>
-                  <!-- Edit -->
-                  <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
-                  <!-- Delete -->
-                  <a class="btn btn-danger btn-sm" href="{{ url_for('delete_task', task_id=task.id) }}" onclick="return confirm('Delete this task?');">Delete</a>
-                </div>
-              </div>
+<!-- Completed Tasks Section -->
+<h6 class="mt-4">Completed</h6>
+<div class="row">
+  {% if completed_tasks %}
+    {% for task in completed_tasks %}
+      <div class="col-12">
+        <div class="card bg-light shadow-sm">
+          <div class="card-body d-flex justify-content-between align-items-center">
+            <span class="completed-task">
+              <strong>{{ task.name }}</strong>
+              {% if task.due_date %}
+                <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
+              {% endif %}
+              <span class="badge bg-info text-dark ms-2">{{ task.category }}</span>
+            </span>
+            <div>
+              <!-- Edit -->
+              <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
+              
+              <!-- Delete - POST method (FIXED) -->
+              <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" style="display: inline;">
+                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this task?');">Delete</button>
+              </form>
             </div>
           </div>
-        {% endfor %}
-      {% else %}
-        <p class="text-muted">No completed tasks.</p>
-      {% endif %}
-    </div>
-
-  </div> <!-- /container -->
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="text-muted">No completed tasks.</p>
+  {% endif %}
+</div>
 
   <!-- Theme toggle logic -->
   <script>
