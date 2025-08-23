@@ -20,15 +20,11 @@ csrf = CSRFProtect(app)
 #TAB icon
 from flask import send_from_directory
 import os
-
+app = Flask(__name__, static_folder='static')
 @app.route('/favicon.ico')
 def favicon():
-    return send_from_directory(os.path.join(app.root_path, 'static/favicon_io'),
+    return send_from_directory(os.path.join(app.root_path, 'static/favicon_ico'),
                                'favicon-32x32.png', mimetype='image/png')
-
-
-
-
 
 # ----- Load Whisper model and AI Assistant -----
 print("Loading Whisper model...")
