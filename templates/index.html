@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DaySavvy</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="{{ url_for('static', filename='favicon_io/favicon-32x32.png') }}">
+  <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
 
   <!-- Bootstrap CSS and Google Font -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
@@ -560,40 +560,49 @@ function startVoiceRecognition() {
 
     <!-- Incomplete Tasks Section -->
     <h6 class="mt-3">Incomplete</h6>
-    <div class="row">
-      {% if incomplete_tasks %}
-        {% for task in incomplete_tasks %}
-          <div class="col-12">
-            <div class="card shadow-sm">
-              <div class="card-body d-flex justify-content-between align-items-center">
-                <span>
-                  <strong>{{ task.name }}</strong>
-                  {% if task.due_date %}
-                    <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
-                    {% if task.due_date < current_date %}
-                      <span class="badge bg-danger ms-2">Overdue!</span>
-                    {% endif %}
-                  {% else %}
-                    <span class="badge bg-light text-dark ms-2">No due date</span>
-                  {% endif %}
-                  <span class="badge bg-info text-dark ms-2">{{ task.category }}</span>
-                </span>
-                <div>
-                  <!-- Complete -->
-                  <a class="btn btn-success btn-sm me-1" href="{{ url_for('complete_task', task_id=task.id) }}">Complete</a>
-                  <!-- Edit -->
-                  <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
-                  <!-- Delete -->
-                  <a class="btn btn-danger btn-sm" href="{{ url_for('delete_task', task_id=task.id) }}" onclick="return confirm('Delete this task?');">Delete</a>
-                </div>
-              </div>
+<div class="row">
+  {% if incomplete_tasks %}
+    {% for task in incomplete_tasks %}
+      <div class="col-12">
+        <div class="card shadow-sm">
+          <div class="card-body d-flex justify-content-between align-items-center">
+            <span>
+              <strong>{{ task.name }}</strong>
+              {% if task.due_date %}
+                {% if task.due_date < current_date %}
+                  <span class="badge bg-danger ms-2">Overdue!</span>
+                {% else %}
+                  <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
+                {% endif %}
+              {% else %}
+                <span class="badge bg-light text-dark ms-2">No due date</span>
+              {% endif %}
+              <span class="badge bg-info text-dark ms-2">{{ task.category }}</span>
+            </span>
+            <div>
+              <!-- Complete - POST method -->
+              <form method="POST" action="{{ url_for('complete_task', task_id=task.id) }}" style="display: inline;">
+                  <button type="submit" class="btn btn-success btn-sm me-1">Complete</button>
+              </form>
+              
+              <!-- Edit - GET method -->
+              <a class="btn btn-warning btn-sm me-1" href="{{ url_for('edit_task', task_id=task.id) }}">Edit</a>
+              
+              <!-- Delete - POST method -->
+              <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" style="display: inline;">
+                  <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete this task?');">Delete</button>
+              </form>
             </div>
           </div>
-        {% endfor %}
-      {% else %}
-        <p class="text-muted">No incomplete tasks.</p>
-      {% endif %}
-    </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="text-muted">No incomplete tasks.</p>
+  {% endif %}
+</div>
+
+
 
     <!-- Completed Tasks Section -->
     <h6 class="mt-4">Completed</h6>

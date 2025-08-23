@@ -94,83 +94,188 @@ ai_assistant = AIAssistant()
 def find_task_by_id(task_id):
     return next((t for t in tasks if t["id"] == task_id), None)
 
-# ----- AI Voice Command Route -----
-from flask import Flask, request, jsonify, render_template
+# AI Voice command
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
 from flask_cors import CORS
+from flask_wtf import FlaskForm
+from wtforms import StringField, DateField, SelectField, SubmitField
+from wtforms.validators import DataRequired
 from datetime import date, timedelta, datetime
-import re
 
 app = Flask(__name__)
-
-@app.template_filter('safe_date')
-def safe_date(value):
-    if not value:
-        return ''
-    # If it's already a string, return as-is
-    if isinstance(value, str):
-        return value
-    # If it's a datetime object, format it
-    try:
-        return value.strftime('%b %d, %Y')
-    except Exception:
-        return str(value)
-
-
-# Enable CORS - this fixes the connection errors
 CORS(app)
+app.config['SECRET_KEY'] = 'arham0564'
 
-# Add secret key for CSRF (newer Flask requirement)  
-app.config['SECRET_KEY'] = 'your-secret-key-here'
+from flask import Flask, request, jsonify, render_template, session, redirect, url_for
+from flask_cors import CORS
+from flask_wtf import FlaskForm
+from wtforms import StringField, DateField, SelectField, SubmitField
+from wtforms.validators import DataRequired
+from datetime import date, timedelta, datetime
 
-# Your existing variables
+# Initialize Flask app
+app = Flask(__name__)
+CORS(app)
+app.config['SECRET_KEY'] = 'daysavvy-secret-key-2025-change-in-production'
+
+# Global variables
 tasks = []
 next_id = 1
-
-# Voice assistant globals
-conversation_state = {"next_expected": None, "pending_task": None}
 STOP_WORDS = {"stop", "done", "cancel", "exit", "quit", "thanks"}
 
-# Your existing routes stay the same...
+class TaskForm(FlaskForm):
+    task = StringField('Task Name', validators=[DataRequired()])
+    due_date = DateField('Due Date')
+    category = SelectField('Category', choices=[
+        ('Other', 'Other'),
+        ('Work', 'Work'),
+        ('Personal', 'Personal'),
+        ('Study', 'Study'),
+        ('Health', 'Health')
+    ])
+    submit = SubmitField('Add Task')
 
-from flask import session
-from flask import request, jsonify, session
-from datetime import date, timedelta
+def get_formatted_tasks():
+    """Helper function to format tasks for template"""
+    filtered = []
+    for task in tasks:
+        task_copy = task.copy()
+        if task_copy.get('due_date') and isinstance(task_copy['due_date'], str):
+            try:
+                # Convert to datetime for template
+                task_copy['due_date'] = datetime.strptime(task_copy['due_date'], '%Y-%m-%d')
+            except ValueError:
+                pass
+        filtered.append(task_copy)
+    return filtered
 
-# Ensure STOP_WORDS is defined elsewhere in your app
-# STOP_WORDS = ["stop", "cancel", "exit", "quit"]
+@app.route("/", methods=["GET", "POST"])
+def index():
+    """Main route that displays the task list"""
+    form = TaskForm()
+    
+    # Handle web form submission
+    if form.validate_on_submit():
+        global next_id
+        new_task = {
+            "id": next_id,
+            "name": form.task.data,
+            "completed": False,
+            "due_date": form.due_date.data.strftime('%Y-%m-%d') if form.due_date.data else None,
+            "category": form.category.data
+        }
+        tasks.append(new_task)
+        next_id += 1
+        return redirect(url_for('index'))
+    
+    return render_template("index.html", 
+                         tasks=get_formatted_tasks(), 
+                         form=form,
+                         current_date=datetime.combine(date.today(), datetime.min.time()))
 
+# Web Interface Routes
+@app.route("/complete/<int:task_id>", methods=["POST"])
+def complete_task(task_id):
+    """Complete a task via web interface"""
+    for task in tasks:
+        if task["id"] == task_id:
+            task["completed"] = True
+            break
+    return redirect(url_for('index'))
+
+@app.route("/delete/<int:task_id>", methods=["POST"])  
+def delete_task(task_id):
+    """Delete a task via web interface"""
+    global tasks
+    tasks = [task for task in tasks if task["id"] != task_id]
+    return redirect(url_for('index'))
+
+@app.route("/toggle/<int:task_id>", methods=["POST"])
+def toggle_task(task_id):
+    """Toggle task completion status"""
+    for task in tasks:
+        if task["id"] == task_id:
+            task["completed"] = not task["completed"]
+            break
+    return redirect(url_for('index'))
+
+@app.route("/edit/<int:task_id>", methods=["GET", "POST"])
+def edit_task(task_id):
+    """Edit a task"""
+    task_to_edit = None
+    for task in tasks:
+        if task["id"] == task_id:
+            task_to_edit = task
+            break
+    
+    if not task_to_edit:
+        return redirect(url_for('index'))
+    
+    form = TaskForm()
+    
+    if form.validate_on_submit():
+        task_to_edit["name"] = form.task.data
+        task_to_edit["due_date"] = form.due_date.data.strftime('%Y-%m-%d') if form.due_date.data else None
+        task_to_edit["category"] = form.category.data
+        return redirect(url_for('index'))
+    
+    # Pre-populate form with current task data
+    form.task.data = task_to_edit["name"]
+    if task_to_edit.get("due_date"):
+        try:
+            form.due_date.data = datetime.strptime(task_to_edit["due_date"], '%Y-%m-%d').date()
+        except ValueError:
+            pass
+    form.category.data = task_to_edit.get("category", "Other")
+    
+    return render_template("edit_task.html", form=form, task=task_to_edit)
+
+# Voice Command Route - FIXED VERSION
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
+    """Handle voice commands for task management with continuous conversation"""
     global tasks, next_id
-
+    
     try:
         data = request.get_json() or {}
         transcript = data.get("transcript", "").strip()
-
+        
         if not transcript:
-            return jsonify({"message": "No speech detected.", "continue_listening": True})
-
+            return jsonify({
+                "message": "No speech detected. Please try again.", 
+                "continue_listening": True
+            })
+        
         tl = transcript.lower().strip()
-
+        print(f"[VOICE] Received: '{transcript}'")
+        
         # Stop command
         if any(word in tl for word in STOP_WORDS):
             session.pop('conversation_state', None)
-            session.modified = True
-            return jsonify({"message": "Voice control stopped.", "continue_listening": False})
-
+            return jsonify({
+                "message": "Voice control stopped. Goodbye!", 
+                "continue_listening": False
+            })
+        
         # Get conversation state
-        conversation_state = session.get('conversation_state', {"next_expected": None, "pending_task": None})
+        conversation_state = session.get('conversation_state', {
+            "next_expected": None, 
+            "pending_task": None
+        })
         pending = conversation_state.get("pending_task")
         expecting = conversation_state.get("next_expected")
-
-        # Due date follow-up
+        
+        print(f"[DEBUG] Expecting: {expecting}, Pending: {bool(pending)}")
+        
+        # Handle due date follow-up
         if expecting == "due_date" and pending:
             due_date = None
+            
             if "today" in tl:
                 due_date = date.today()
             elif "tomorrow" in tl:
                 due_date = date.today() + timedelta(days=1)
-            elif "skip" in tl:
+            elif "skip" in tl or "no" in tl:
                 conversation_state["next_expected"] = "category"
                 session['conversation_state'] = conversation_state
                 session.modified = True
@@ -178,18 +283,17 @@ def voice_command():
                     "message": "No due date set. What category? Say Work, Personal, Study, Health, or Other.",
                     "continue_listening": True
                 })
-
+            
             if due_date:
-                # Update task - store as string to avoid Jinja2 error
                 for task in tasks:
                     if task["id"] == pending["id"]:
                         task["due_date"] = due_date.strftime('%Y-%m-%d')
                         break
-
+                
                 conversation_state["next_expected"] = "category"
                 session['conversation_state'] = conversation_state
                 session.modified = True
-
+                
                 return jsonify({
                     "message": f"Due date set to {due_date.strftime('%B %d')}. What category? Say Work, Personal, Study, Health, or Other.",
                     "continue_listening": True,
@@ -197,72 +301,134 @@ def voice_command():
                 })
             else:
                 return jsonify({
-                    "message": "Say 'today', 'tomorrow', or 'skip' for due date.",
+                    "message": "Please say 'today', 'tomorrow', or 'skip' for due date.",
                     "continue_listening": True
                 })
-
-        # Category follow-up
+        
+        # Handle category follow-up
         if expecting == "category" and pending:
             category = "Other"
+            
             if "work" in tl:
                 category = "Work"
             elif "personal" in tl:
                 category = "Personal"
-            elif "study" in tl:
+            elif "study" in tl or "education" in tl:
                 category = "Study"
-            elif "health" in tl:
+            elif "health" in tl or "fitness" in tl:
                 category = "Health"
-
-            # Update task
+            
             for task in tasks:
                 if task["id"] == pending["id"]:
                     task["category"] = category
                     break
-
-            # Clear session
+            
             session.pop('conversation_state', None)
             session.modified = True
-
+            
             return jsonify({
-                "message": f"Task '{pending['name']}' added with category {category}. What's next?",
+                "message": f"Perfect! Task '{pending['name']}' added with category {category}. What would you like to do next?",
                 "continue_listening": True,
                 "reload_page": True
             })
-
-        # Add task
-        if "add" in tl:
-            parts = transcript.split("add", 1)
-            if len(parts) > 1:
-                task_name = parts[1].replace("task", "").strip()
-                if task_name:
-                    new_task = {
-                        "id": next_id,
-                        "name": task_name,
-                        "completed": False,
-                        "due_date": None,
-                        "category": "Other"
-                    }
-                    tasks.append(new_task)
-                    next_id += 1
-
-                    session['conversation_state'] = {
-                        "next_expected": "due_date",
-                        "pending_task": new_task
-                    }
-                    session.modified = True
-
+        
+        # Handle add task - FIXED BUG HERE
+        if "add" in tl or "create" in tl:
+            task_name = ""
+            if "add" in tl:
+                parts = tl.split("add", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()
+            elif "create" in tl:
+                parts = tl.split("create", 1)
+                if len(parts) > 1:
+                    task_name = parts[1].replace("task", "").strip()  # FIXED: was parts[2]
+            
+            if task_name:
+                new_task = {
+                    "id": next_id,
+                    "name": task_name.title(),
+                    "completed": False,
+                    "due_date": None,
+                    "category": "Other"
+                }
+                tasks.append(new_task)
+                next_id += 1
+                
+                session['conversation_state'] = {
+                    "next_expected": "due_date",
+                    "pending_task": new_task
+                }
+                session.modified = True
+                
+                return jsonify({
+                    "message": f"Adding '{task_name.title()}'. When is this due? Say 'today', 'tomorrow', or 'skip'.",
+                    "continue_listening": True,
+                    "reload_page": True
+                })
+            else:
+                return jsonify({
+                    "message": "What task should I add? Try saying 'add buy groceries'.",
+                    "continue_listening": True
+                })
+        
+        # Handle complete task
+        if "complete" in tl or "finish" in tl:
+            if not tasks:
+                return jsonify({
+                    "message": "You have no tasks to complete.",
+                    "continue_listening": True
+                })
+            
+            # Find task by name
+            completed_task = None
+            for task in tasks:
+                if not task['completed'] and task['name'].lower() in tl:
+                    task['completed'] = True
+                    completed_task = task
+                    break
+            
+            if completed_task:
+                return jsonify({
+                    "message": f"Excellent! Task '{completed_task['name']}' marked as complete!",
+                    "continue_listening": True,
+                    "reload_page": True
+                })
+            else:
+                incomplete_tasks = [task for task in tasks if not task['completed']]
+                if incomplete_tasks:
+                    task_names = [task['name'] for task in incomplete_tasks[:3]]
                     return jsonify({
-                        "message": f"Adding '{task_name}'. Set due date? Say 'today', 'tomorrow', or 'skip'.",
-                        "continue_listening": True,
-                        "reload_page": True
+                        "message": f"Which task should I complete? You have: {', '.join(task_names)}",
+                        "continue_listening": True
                     })
+        
+        # Handle list tasks
+        if "list" in tl or "show" in tl:
+            if not tasks:
+                return jsonify({
+                    "message": "You have no tasks yet.",
+                    "continue_listening": True
+                })
+            
+            incomplete_tasks = [task for task in tasks if not task['completed']]
+            if not incomplete_tasks:
+                return jsonify({
+                    "message": "All tasks are complete! Great job!",
+                    "continue_listening": True
+                })
+            
+            task_names = [task['name'] for task in incomplete_tasks[:3]]
+            message = f"You have {len(incomplete_tasks)} tasks: " + ", ".join(task_names)
+            if len(incomplete_tasks) > 3:
+                message += f" and {len(incomplete_tasks) - 3} more."
             
             return jsonify({
-                "message": "What should I add? Try saying 'add buy groceries'.",
+                "message": message,
                 "continue_listening": True
             })
-
-        # Skip follow-up
+        
+        # Handle skip during conversation
         if "skip" in tl and expecting:
             if expecting == "due_date":
                 conversation_state["next_expected"] = "category"
@@ -280,17 +446,66 @@ def voice_command():
                     "continue_listening": True,
                     "reload_page": True
                 })
-
+        
+        # Default response
         return jsonify({
-            "message": f"I heard: '{transcript}'. Try: add task, complete task, list tasks, or stop.",
+            "message": f"I heard: '{transcript}'. Try: 'add [task]', 'complete [task]', 'list tasks', or 'stop'.",
             "continue_listening": True
         })
-
+    
     except Exception as e:
-        print(f"[ERROR] {str(e)}")
-        return jsonify({"message": "Server error occurred.", "continue_listening": True}), 500
+        print(f"[ERROR] Voice command error: {str(e)}")
+        return jsonify({
+            "message": "Sorry, I encountered an error. Please try again.", 
+            "continue_listening": True
+        }), 500
 
+# API Routes
+@app.route("/api/tasks", methods=["GET"])
+def get_tasks():
+    return jsonify(tasks)
 
+@app.route("/api/tasks", methods=["POST"])
+def add_task_api():
+    global next_id
+    data = request.get_json()
+    if not data or not data.get('name'):
+        return jsonify({"error": "Task name is required"}), 400
+    
+    new_task = {
+        "id": next_id,
+        "name": data['name'],
+        "completed": False,
+        "due_date": data.get('due_date'),
+        "category": data.get('category', 'Other')
+    }
+    tasks.append(new_task)
+    next_id += 1
+    return jsonify(new_task), 201
+
+@app.route("/api/tasks/<int:task_id>", methods=["PUT"])
+def update_task_api(task_id):
+    data = request.get_json()
+    for task in tasks:
+        if task["id"] == task_id:
+            task.update({k: v for k, v in data.items() if k in task})
+            return jsonify(task)
+    return jsonify({"error": "Task not found"}), 404
+
+@app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
+def delete_task_api(task_id):
+    global tasks
+    original_length = len(tasks)
+    tasks = [task for task in tasks if task["id"] != task_id]
+    if len(tasks) < original_length:
+        return jsonify({"message": "Task deleted"})
+    return jsonify({"error": "Task not found"}), 404
+
+if __name__ == '__main__':
+    print("Starting DaySavvy Flask Application...")
+    print("Voice commands available at: /voice/command")
+    print("Main interface at: http://localhost:5000")
+    app.run(debug=True, host='0.0.0.0', port=5000)
 
 
 # ----- WTForms: Task form definition -----
