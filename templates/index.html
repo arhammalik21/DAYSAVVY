@@ -229,12 +229,13 @@ function startListening() {
     
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
-    recognition.continuous = true;
+    recognition.continuous = false;  // CHANGED: More stable than true
     recognition.interimResults = false;
     recognition.lang = 'en-US';
     
     recognition.onresult = (event) => {
-        const transcript = event.results[event.results.length - 1][0].transcript.trim();
+        const transcript = event.results[0][0].transcript.trim();
+        recognition.stop(); // CRITICAL: Stop immediately after getting result
         
         if (transcript) {
             document.getElementById('voiceStatus').textContent = `Processing: ${transcript}`;
@@ -248,31 +249,70 @@ function startListening() {
             .then(data => {
                 document.getElementById('voiceStatus').textContent = data.message;
                 
-                if (data.reload_page) {
-                    setTimeout(() => location.reload(), 2000);
-                }
-                
-                if ('speechSynthesis' in window) {
+                if ('speechSynthesis' in window && data.message) {
                     speechSynthesis.cancel();
                     const utterance = new SpeechSynthesisUtterance(data.message);
+                    
+                    utterance.onend = () => {
+                        // Handle page reload first
+                        if (data.reload_page) {
+                            setTimeout(() => location.reload(), 1000);
+                            return;
+                        }
+                        
+                        // CRITICAL FIX: Only stop if server explicitly says to stop
+                        if (data.continue_listening === false) {
+                            stopVoiceControl();
+                        } else {
+                            // Keep listening for more commands (including "that's all")
+                            setTimeout(() => {
+                                if (isListening) {
+                                    startListening();
+                                }
+                            }, 500);
+                        }
+                    };
+                    
                     speechSynthesis.speak(utterance);
+                } else {
+                    // No speech synthesis
+                    if (data.reload_page) {
+                        setTimeout(() => location.reload(), 1000);
+                    } else if (data.continue_listening === false) {
+                        stopVoiceControl();
+                    } else {
+                        setTimeout(() => {
+                            if (isListening) {
+                                startListening();
+                            }
+                        }, 500);
+                    }
                 }
             })
             .catch(error => {
+                console.error('Command error:', error);
                 document.getElementById('voiceStatus').textContent = 'Command failed';
+                // Restart listening after error
+                setTimeout(() => {
+                    if (isListening) {
+                        startListening();
+                    }
+                }, 1000);
             });
         }
     };
     
     recognition.onend = () => {
-        if (isListening) {
-            setTimeout(startListening, 100);
-        }
+        // REMOVED auto-restart from onend - now handled in utterance.onend
+        console.log('Recognition session ended');
     };
     
-    recognition.onerror = () => {
+    recognition.onerror = (event) => {
+        console.error('Recognition error:', event.error);
         if (isListening) {
-            setTimeout(startListening, 500);
+            setTimeout(() => {
+                startListening();
+            }, 1000);
         }
     };
     
@@ -291,10 +331,6 @@ function stopVoiceControl() {
     document.getElementById('voiceStatus').textContent = 'Voice control stopped';
 }
 </script>
-
-
-
-
 
 <!-- Add Material Icons -->
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">

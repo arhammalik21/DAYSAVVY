@@ -256,6 +256,15 @@ def voice_command():
                 "continue_listening": False
             })
         
+        # AUTO-STOP PHRASES - stops voice control automatically
+        AUTO_STOP_PHRASES = ['that\'s all', 'thats all', 'all done', 'finished', 'no more', 'i\'m done', 'im done', 'nothing else', 'that\'s it', 'thats it']
+        if any(phrase in tl for phrase in AUTO_STOP_PHRASES):
+            session.pop('conversation_state', None)
+            return jsonify({
+                "message": "All done! Voice control stopped. Have a great day!", 
+                "continue_listening": False
+            })
+        
         # GET CONVERSATION STATE - handles multi-step task creation
         conversation_state = session.get('conversation_state', {
             "next_expected": None, 
@@ -295,10 +304,10 @@ def voice_command():
                 session.modified = True
                 
                 return jsonify({
-                    "message": f"Due date set to {due_date.strftime('%B %d')}. What category? Say Work, Personal, Study, Health, or Other.",
-                    "continue_listening": True,
-                    "reload_page": True
-                })
+    "message": f"Due date set to {due_date.strftime('%B %d')}. What category? Say Work, Personal, Study, Health, or Other.",
+    "continue_listening": True
+})
+
             else:
                 return jsonify({
                     "message": "Please say 'today', 'tomorrow', or 'skip' for due date.",
@@ -329,7 +338,7 @@ def voice_command():
             session.modified = True
             
             return jsonify({
-                "message": f"Perfect! Task '{pending['name']}' added with category {category}. What would you like to do next?",
+                "message": f"Perfect! Task '{pending['name']}' added with category {category}. What would you like to do next? Say 'that's all' to stop.",
                 "continue_listening": True,
                 "reload_page": True
             })
@@ -345,7 +354,7 @@ def voice_command():
             elif "remove" in tl:
                 parts = tl.split("remove", 1)
                 if len(parts) > 1:
-                    task_name = parts[1].replace("task", "").strip()  # FIXED: was parts
+                    task_name = parts[1].replace("task", "").strip()
             
             # Check if task_name is not empty before proceeding
             if task_name and task_name.strip():
@@ -359,7 +368,7 @@ def voice_command():
                 
                 if deleted_task:
                     return jsonify({
-                        "message": f"Deleted '{deleted_task['name']}' successfully!",
+                        "message": f"Deleted '{deleted_task['name']}' successfully! What would you like to do next?",
                         "continue_listening": True,
                         "reload_page": True
                     })
@@ -414,10 +423,9 @@ def voice_command():
                 session.modified = True
                 
                 return jsonify({
-    "message": f"Adding '{task_name.title()}'. When is this due? Say 'today', 'tomorrow', or 'skip'.",
-    "continue_listening": True
-})
-
+                    "message": f"Adding '{task_name.title()}'. When is this due? Say 'today', 'tomorrow', or 'skip'.",
+                    "continue_listening": True
+                })
             else:
                 return jsonify({
                     "message": "What task should I add? Try saying 'add buy groceries'.",
@@ -460,7 +468,7 @@ def voice_command():
                 
                 if completed_task:
                     return jsonify({
-                        "message": f"Excellent! Task '{completed_task['name']}' marked as complete!",
+                        "message": f"Excellent! Task '{completed_task['name']}' marked as complete! What would you like to do next?",
                         "continue_listening": True,
                         "reload_page": True
                     })
@@ -533,14 +541,14 @@ def voice_command():
                 session.pop('conversation_state', None)
                 session.modified = True
                 return jsonify({
-                    "message": "Category kept as Other. What's next?",
+                    "message": "Category kept as Other. What would you like to do next? Say 'that's all' to stop.",
                     "continue_listening": True,
                     "reload_page": True
                 })
         
         # DEFAULT RESPONSE - when command not recognized
         return jsonify({
-            "message": f"I heard: '{transcript}'. Try: 'add [task]', 'delete [task]', 'complete [task]', 'list tasks', or 'stop'.",
+            "message": f"I heard: '{transcript}'. Try: 'add [task]', 'delete [task]', 'complete [task]', 'list tasks', 'that's all' to stop, or 'stop'.",
             "continue_listening": True
         })
     
@@ -782,4 +790,3 @@ def complete_task(task_id):
 if __name__ == "__main__":
     print("AI Task Manager starting up...")
     app.run(debug=True)
-
