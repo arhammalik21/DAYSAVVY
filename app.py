@@ -29,6 +29,88 @@ with app.app_context():
     db.create_all()
     print("✅ Database updated with new time columns!")
 
+    class Task(db.Model):
+     id = db.Column(db.Integer, primary_key=True)
+    title = db.Column(db.String(200), nullable=False)
+    due_date = db.Column(db.Date, nullable=True)
+    task_time = db.Column(db.Time, nullable=True)
+    category = db.Column(db.String(50), nullable=True)
+    completed = db.Column(db.Boolean, default=False)  # ✅ THIS WAS MISSING
+
+class TaskForm(FlaskForm):
+    task = StringField('Task', validators=[DataRequired()])
+    due_date = DateField('Due Date', validators=[Optional()])
+    task_time = TimeField('Time', validators=[Optional()])
+    category = SelectField('Category', choices=[('Work','Work'),('Personal','Personal'),('Study','Study'),('Other','Other')])
+    submit = SubmitField('Add Task')
+
+@app.route('/', methods=['GET','POST'])
+def index():
+    form = TaskForm()
+    if form.validate_on_submit():
+        # Create task by setting properties
+        task = Task()
+        task.title = form.task.data
+        task.due_date = form.due_date.data
+        task.task_time = form.task_time.data
+        task.category = form.category.data
+        # completed will be False by default
+        
+        db.session.add(task)
+        db.session.commit()
+        flash('Task with time added!', 'success')
+        return redirect(url_for('index'))
+    
+    all_tasks = Task.query.all()
+    incomplete_tasks = [t for t in all_tasks if not t.completed]  # ✅ NOW WORKS
+    completed_tasks = [t for t in all_tasks if t.completed]      # ✅ NOW WORKS
+    
+    return render_template('index.html', form=form, 
+                         incomplete_tasks=incomplete_tasks, 
+                         completed_tasks=completed_tasks, 
+                         current_date=date.today())
+
+@app.route('/edit/<int:task_id>', methods=['GET','POST'])
+def edit_task(task_id):
+    task = Task.query.get_or_404(task_id)
+    form = TaskForm()
+    if request.method == 'GET':
+        form.task.data = task.title
+        form.due_date.data = task.due_date
+        form.task_time.data = task.task_time
+        form.category.data = task.category
+    if form.validate_on_submit():
+        task.title = form.task.data
+        task.due_date = form.due_date.data
+        task.task_time = form.task_time.data
+        task.category = form.category.data
+        db.session.commit()
+        flash('Task updated!', 'success')
+        return redirect(url_for('index'))
+    return render_template('edit_task.html', form=form, task=task)
+
+@app.route('/delete/<int:task_id>', methods=['POST'])
+def delete_task(task_id):
+    task = Task.query.get_or_404(task_id)
+    db.session.delete(task)
+    db.session.commit()
+    flash('Task deleted!', 'warning')
+    return redirect(url_for('index'))
+
+@app.route('/complete/<int:task_id>', methods=['POST'])
+def complete_task(task_id):
+    task = Task.query.get_or_404(task_id)
+    task.completed = True  # ✅ NOW WORKS
+    db.session.commit()
+    flash('Task completed!', 'success')
+    return redirect(url_for('index'))
+
+if __name__ == '__main__':
+    with app.app_context():
+        db.drop_all()  # Delete old broken database
+        db.create_all() # Create new database with correct schema
+        print("✅ Database created with completed field!")
+    app.run(debug=True)
 #TAB icon
 from flask import send_from_directory
 import os
@@ -673,8 +755,8 @@ if __name__ == '__main__':
 # ----- WTForms: Task form definition (UPDATED WITH TIME FIELDS) -----
 class TaskForm(FlaskForm):
     task = StringField('Task', validators=[DataRequired()])
-    due_date = DateField('Due Date', format='%Y-%m-%d', validators=[], default=None)
-    task_time = TimeField('Time', validators=[Optional()])  # ✅ This was missing
+    due_date = DateField('Due Date', format='%Y-%m-%d', validators=[Optional()])
+    task_time = TimeField('Time', validators=[Optional()])
     category = SelectField('Category', choices=[
         ('Work', 'Work'),
         ('Personal', 'Personal'),
@@ -683,22 +765,17 @@ class TaskForm(FlaskForm):
     ])
     submit = SubmitField('Add Task')
 
-# ✅ FIXED Task Model with task_time field
+# ----- TASK MODEL -----
 class Task(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
     completed = db.Column(db.Boolean, default=False)
     due_date = db.Column(db.Date, nullable=True)
     category = db.Column(db.String(50), default='Other')
-    task_time = db.Column(db.Time, nullable=True)  # ✅ Simple time field
+    task_time = db.Column(db.Time, nullable=True)  # TIME FIELD
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
-    def format_time_display(self):
-        if self.task_time:
-            return self.task_time.strftime('%I:%M %p')
-        return "No time set"
 
-# ✅ FIXED Routes
+# ----- MAIN ROUTE -----
 @app.route("/", methods=["GET", "POST"])
 def index():
     form = TaskForm()
@@ -707,16 +784,16 @@ def index():
         task = Task(
             name=form.task.data.strip(),
             due_date=form.due_date.data,
-            task_time=form.task_time.data,  # ✅ Handle the task_time field
+            task_time=form.task_time.data,  # SAVE TIME
             category=form.category.data
         )
         
         db.session.add(task)
         db.session.commit()
-        flash("Task added!", "success")
+        flash("Task added successfully!", "success")
         return redirect(url_for("index"))
     
-    # Filter logic
+    # GET TASKS AND FILTER
     q = request.args.get("q", "").lower()
     status = request.args.get("status", "")
     
@@ -731,8 +808,16 @@ def index():
         query = query.filter(Task.completed == False, Task.due_date != None, Task.due_date < date.today())
     
     filtered = query.order_by(Task.created_at.desc()).all()
-    return render_template("index.html", tasks=filtered, form=form, current_date=date.today())
+    
+    # SEPARATE INCOMPLETE AND COMPLETED TASKS
+    incomplete_tasks = [t for t in filtered if not t.completed]
+    completed_tasks = [t for t in filtered if t.completed]
+    
+    return render_template("index.html", tasks=filtered, form=form, 
+                         incomplete_tasks=incomplete_tasks, completed_tasks=completed_tasks, 
+                         current_date=date.today())
 
+# ----- EDIT TASK -----
 @app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
     task = Task.query.get_or_404(task_id)
@@ -741,7 +826,7 @@ def edit_task(task_id):
     if request.method == "POST" and form.validate_on_submit():
         task.name = form.task.data.strip()
         task.due_date = form.due_date.data
-        task.task_time = form.task_time.data  # ✅ Handle task_time
+        task.task_time = form.task_time.data  # UPDATE TIME
         task.category = form.category.data
         
         db.session.commit()
@@ -751,31 +836,32 @@ def edit_task(task_id):
     if request.method == "GET":
         form.task.data = task.name
         form.due_date.data = task.due_date
-        form.task_time.data = task.task_time  # ✅ Pre-populate task_time
+        form.task_time.data = task.task_time  # PRE-POPULATE TIME
         form.category.data = task.category
     
     return render_template("edit_task.html", form=form, task=task)
 
+# ----- DELETE TASK -----
 @app.route("/delete/<int:task_id>", methods=['POST'])
 def delete_task(task_id):
     task = Task.query.get_or_404(task_id)
     db.session.delete(task)
     db.session.commit()
-    flash("Task deleted.", "warning")
+    flash("Task deleted successfully!", "warning")
     return redirect(url_for("index"))
 
+# ----- COMPLETE TASK -----
 @app.route("/complete/<int:task_id>", methods=['POST'])
 def complete_task(task_id):
     task = Task.query.get_or_404(task_id)
     task.completed = True
     db.session.commit()
-    flash("Task completed!", "success")
+    flash("Task marked as completed!", "success")
     return redirect(url_for("index"))
 
-# Initialize Database
-with app.app_context():
-    db.create_all()
-
+# ----- INITIALIZE DATABASE -----
 if __name__ == "__main__":
-    print("AI Task Manager starting up...")
+    with app.app_context():
+        db.create_all()  # CREATE DATABASE WITH TIME FIELD
+    print("🚀 DAYSAVVY starting up...")
     app.run(debug=True)
