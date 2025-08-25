@@ -1,10 +1,13 @@
 # Import necessary modules
 from flask import Flask, render_template, redirect, url_for, flash, abort, request, jsonify
 from flask_wtf import FlaskForm, CSRFProtect
-from wtforms import StringField, DateField, SelectField
-from wtforms.validators import DataRequired
-from datetime import date
+from flask_sqlalchemy import SQLAlchemy
+from flask_wtf import FlaskForm
+from wtforms import StringField, DateField, SelectField, TimeField, BooleanField, SubmitField
+from wtforms.validators import DataRequired, Optional
 from datetime import date, timedelta, datetime
+from flask_migrate import Migrate
+import os
 import re
 import openai
 from gtts import gTTS
@@ -14,8 +17,17 @@ import json
 
 # ----- Initialize Flask and CSRF protection -----
 app = Flask(__name__)
-app.config["SECRET_KEY"] = "arham0564"
+app.config['SECRET_KEY'] = 'arham0564'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///DAYSAVVY.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 csrf = CSRFProtect(app)
+
+db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+
+with app.app_context():
+    db.create_all()
+    print("✅ Database updated with new time columns!")
 
 #TAB icon
 from flask import send_from_directory
@@ -658,135 +670,112 @@ if __name__ == '__main__':
     print("Main interface at: http://localhost:5000")
     app.run(debug=True, host='0.0.0.0', port=5000)
 
-# ----- WTForms: Task form definition -----
+# ----- WTForms: Task form definition (UPDATED WITH TIME FIELDS) -----
 class TaskForm(FlaskForm):
     task = StringField('Task', validators=[DataRequired()])
     due_date = DateField('Due Date', format='%Y-%m-%d', validators=[], default=None)
+    task_time = TimeField('Time', validators=[Optional()])  # ✅ This was missing
     category = SelectField('Category', choices=[
         ('Work', 'Work'),
         ('Personal', 'Personal'),
         ('Study', 'Study'),
         ('Other', 'Other')
     ])
+    submit = SubmitField('Add Task')
 
-# ----- In-memory store -----
-tasks = []
-next_id = 1
+# ✅ FIXED Task Model with task_time field
+class Task(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(200), nullable=False)
+    completed = db.Column(db.Boolean, default=False)
+    due_date = db.Column(db.Date, nullable=True)
+    category = db.Column(db.String(50), default='Other')
+    task_time = db.Column(db.Time, nullable=True)  # ✅ Simple time field
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def format_time_display(self):
+        if self.task_time:
+            return self.task_time.strftime('%I:%M %p')
+        return "No time set"
 
-# ----- Home: add task (POST), search/filter (GET), and render list -----
+# ✅ FIXED Routes
 @app.route("/", methods=["GET", "POST"])
 def index():
     form = TaskForm()
-    global next_id
-
-    # Handle task creation on POST
+    
     if form.validate_on_submit():
-        tasks.append({
-            "id": next_id,
-            "name": form.task.data.strip(),
-            "completed": False,
-            "due_date": form.due_date.data,
-            "category": form.category.data
-        })
-        next_id += 1
+        task = Task(
+            name=form.task.data.strip(),
+            due_date=form.due_date.data,
+            task_time=form.task_time.data,  # ✅ Handle the task_time field
+            category=form.category.data
+        )
+        
+        db.session.add(task)
+        db.session.commit()
         flash("Task added!", "success")
         return redirect(url_for("index"))
-
-    # Read search and filter parameters on GET
+    
+    # Filter logic
     q = request.args.get("q", "").lower()
     status = request.args.get("status", "")
-
-    # Build filtered list
-    filtered = []
-    for t in tasks:
-        if q and q not in t["name"].lower():
-            continue
-
-        if status == "incomplete" and t["completed"]:
-            continue
-
-        if status == "completed" and not t["completed"]:
-            continue
-
-        if status == "overdue":
-            if t["completed"] or not t["due_date"] or t["due_date"] >= date.today():
-                continue
-
-        filtered.append(t)
-
+    
+    query = Task.query
+    if q:
+        query = query.filter(Task.name.contains(q))
+    if status == "incomplete":
+        query = query.filter(Task.completed == False)
+    elif status == "completed":
+        query = query.filter(Task.completed == True)
+    elif status == "overdue":
+        query = query.filter(Task.completed == False, Task.due_date != None, Task.due_date < date.today())
+    
+    filtered = query.order_by(Task.created_at.desc()).all()
     return render_template("index.html", tasks=filtered, form=form, current_date=date.today())
 
-# ----- Edit task -----
 @app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
-    """Edit a task via web interface"""
-    # Find the task
-    task = next((t for t in tasks if t["id"] == task_id), None)
-    if not task:
-        flash("Task not found!", "danger")
-        return redirect(url_for("index"))
-
+    task = Task.query.get_or_404(task_id)
     form = TaskForm()
     
-    # Handle form submission (POST)
     if request.method == "POST" and form.validate_on_submit():
-        task["name"] = form.task.data.strip()
-        task["due_date"] = form.due_date.data.strftime('%Y-%m-%d') if form.due_date.data else None
-        task["category"] = form.category.data
+        task.name = form.task.data.strip()
+        task.due_date = form.due_date.data
+        task.task_time = form.task_time.data  # ✅ Handle task_time
+        task.category = form.category.data
+        
+        db.session.commit()
         flash("Task updated successfully!", "success")
         return redirect(url_for("index"))
     
-    # Pre-populate form fields for GET request
     if request.method == "GET":
-        form.task.data = task["name"]
-        if task.get("due_date"):
-            try:
-                # Convert string date to date object for form
-                form.due_date.data = datetime.strptime(task["due_date"], '%Y-%m-%d').date()
-            except (ValueError, TypeError):
-                pass
-        form.category.data = task.get("category", "Other")
+        form.task.data = task.name
+        form.due_date.data = task.due_date
+        form.task_time.data = task.task_time  # ✅ Pre-populate task_time
+        form.category.data = task.category
     
     return render_template("edit_task.html", form=form, task=task)
 
-# ----- Delete task -----
 @app.route("/delete/<int:task_id>", methods=['POST'])
 def delete_task(task_id):
-    global tasks
-    updated = [t for t in tasks if t["id"] != task_id]
-    if len(updated) == len(tasks):
-        abort(404)
-    
-    tasks = updated
+    task = Task.query.get_or_404(task_id)
+    db.session.delete(task)
+    db.session.commit()
     flash("Task deleted.", "warning")
     return redirect(url_for("index"))
 
 @app.route("/complete/<int:task_id>", methods=['POST'])
 def complete_task(task_id):
-    global tasks
-    for task in tasks:
-        if task["id"] == task_id:
-            task["completed"] = True  # or however you mark completion
-            break
+    task = Task.query.get_or_404(task_id)
+    task.completed = True
+    db.session.commit()
     flash("Task completed!", "success")
     return redirect(url_for("index"))
 
+# Initialize Database
+with app.app_context():
+    db.create_all()
 
-
-# ----- Mark task as complete -----
-@app.route("/complete/<int:task_id>")
-def complete_task(task_id):
-    for task in tasks:
-        if task["id"] == task_id:
-            task["completed"] = True
-            flash("Task marked as complete!", "info")
-            break
-    else:
-        abort(404)
-
-    return redirect(url_for("index"))
-
-# ----- Entry point -----
 if __name__ == "__main__":
     print("AI Task Manager starting up...")
     app.run(debug=True)
