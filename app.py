@@ -21,6 +21,8 @@ app.config['SECRET_KEY'] = 'arham0564'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///DAYSAVVY.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 csrf = CSRFProtect(app)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -58,73 +60,62 @@ def index():
         db.session.add(task)
         db.session.commit()
         flash('Task added!', 'success')
-        return redirect(url_for('index'))
 
+    # CRITICAL: Expire session cache before querying
+    db.session.expire_all()
+    
+    # Query all tasks fresh
     all_tasks = Task.query.all()
     incomplete_tasks = [t for t in all_tasks if not t.completed]
     completed_tasks = [t for t in all_tasks if t.completed]
-    
-    print(f"Total tasks: {len(all_tasks)}, Incomplete: {len(incomplete_tasks)}, Completed: {len(completed_tasks)}")
 
-    return render_template('index.html', form=form, 
-                         incomplete_tasks=incomplete_tasks, 
-                         completed_tasks=completed_tasks, 
-                         current_date=date.today())
+    # Debug output to console
+    print(f'DEBUG: Total tasks: {len(all_tasks)}, Incomplete: {len(incomplete_tasks)}, Completed: {len(completed_tasks)}')
+    for task in all_tasks:
+        print(f'  Task: {task.title}, Completed: {task.completed}')
 
-# MATCH YOUR TEMPLATE URL NAMES
+    return render_template('index.html', 
+                     form=form,
+                     incomplete_tasks=incomplete_tasks, 
+                     completed_tasks=completed_tasks, 
+                     current_date=date.today())
+
+
 @app.route('/complete/<int:task_id>', methods=['POST'])
 def complete_task(task_id):
-    task = Task.query.get_or_404(task_id)
+    task = db.session.get(Task, task_id)
     task.completed = True
     db.session.commit()
-    flash('Task completed!', 'success')
     return redirect(url_for('index'))
 
 @app.route('/delete/<int:task_id>', methods=['POST'])
 def delete_task(task_id):
-    task = Task.query.get_or_404(task_id)
+    task = db.session.get(Task, task_id)
     db.session.delete(task)
     db.session.commit()
-    flash('Task deleted!', 'warning')
     return redirect(url_for('index'))
 
 @app.route('/edit/<int:task_id>', methods=['GET', 'POST'])
 def edit_task(task_id):
-    task = Task.query.get_or_404(task_id)
-    form = TaskForm()
+    task = db.session.get(Task, task_id)
+    form = TaskForm(obj=task)
     
-    if request.method == 'GET':
-        form.task.data = task.title
-        form.due_date.data = task.due_date
-        form.task_time.data = task.task_time
-        form.category.data = task.category
-        
     if form.validate_on_submit():
         task.title = form.task.data
         task.due_date = form.due_date.data
         task.task_time = form.task_time.data
         task.category = form.category.data
         db.session.commit()
-        flash('Task updated!', 'success')
         return redirect(url_for('index'))
         
     return render_template('edit_task.html', form=form, task=task)
 
 if __name__ == '__main__':
-    # Delete old database and create fresh one
     if os.path.exists('tasks.db'):
         os.remove('tasks.db')
-        print("Deleted old database")
-        
     with app.app_context():
         db.create_all()
-        print("Created fresh database")
-        
-    print('Starting app on http://127.0.0.1:5000')
     app.run(debug=True)
-
-
-
 
 #TAB icon
 from flask import send_from_directory
