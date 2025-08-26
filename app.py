@@ -29,13 +29,13 @@ with app.app_context():
     db.create_all()
     print("✅ Database updated with new time columns!")
 
-    class Task(db.Model):
-     id = db.Column(db.Integer, primary_key=True)
+class Task(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)
     due_date = db.Column(db.Date, nullable=True)
     task_time = db.Column(db.Time, nullable=True)
     category = db.Column(db.String(50), nullable=True)
-    completed = db.Column(db.Boolean, default=False)  # ✅ THIS WAS MISSING
+    completed = db.Column(db.Boolean, default=False, nullable=False)
 
 class TaskForm(FlaskForm):
     task = StringField('Task', validators=[DataRequired()])
@@ -44,50 +44,41 @@ class TaskForm(FlaskForm):
     category = SelectField('Category', choices=[('Work','Work'),('Personal','Personal'),('Study','Study'),('Other','Other')])
     submit = SubmitField('Add Task')
 
-@app.route('/', methods=['GET','POST'])
+@app.route('/', methods=['GET', 'POST'])
 def index():
     form = TaskForm()
     if form.validate_on_submit():
-        # Create task by setting properties
-        task = Task()
-        task.title = form.task.data
-        task.due_date = form.due_date.data
-        task.task_time = form.task_time.data
-        task.category = form.category.data
-        # completed will be False by default
-        
+        task = Task(
+            title=form.task.data,
+            due_date=form.due_date.data,
+            task_time=form.task_time.data,
+            category=form.category.data,
+            completed=False
+        )
         db.session.add(task)
         db.session.commit()
-        flash('Task with time added!', 'success')
+        flash('Task added!', 'success')
         return redirect(url_for('index'))
-    
+
     all_tasks = Task.query.all()
-    incomplete_tasks = [t for t in all_tasks if not t.completed]  # ✅ NOW WORKS
-    completed_tasks = [t for t in all_tasks if t.completed]      # ✅ NOW WORKS
+    incomplete_tasks = [t for t in all_tasks if not t.completed]
+    completed_tasks = [t for t in all_tasks if t.completed]
     
+    print(f"Total tasks: {len(all_tasks)}, Incomplete: {len(incomplete_tasks)}, Completed: {len(completed_tasks)}")
+
     return render_template('index.html', form=form, 
                          incomplete_tasks=incomplete_tasks, 
                          completed_tasks=completed_tasks, 
                          current_date=date.today())
 
-@app.route('/edit/<int:task_id>', methods=['GET','POST'])
-def edit_task(task_id):
+# MATCH YOUR TEMPLATE URL NAMES
+@app.route('/complete/<int:task_id>', methods=['POST'])
+def complete_task(task_id):
     task = Task.query.get_or_404(task_id)
-    form = TaskForm()
-    if request.method == 'GET':
-        form.task.data = task.title
-        form.due_date.data = task.due_date
-        form.task_time.data = task.task_time
-        form.category.data = task.category
-    if form.validate_on_submit():
-        task.title = form.task.data
-        task.due_date = form.due_date.data
-        task.task_time = form.task_time.data
-        task.category = form.category.data
-        db.session.commit()
-        flash('Task updated!', 'success')
-        return redirect(url_for('index'))
-    return render_template('edit_task.html', form=form, task=task)
+    task.completed = True
+    db.session.commit()
+    flash('Task completed!', 'success')
+    return redirect(url_for('index'))
 
 @app.route('/delete/<int:task_id>', methods=['POST'])
 def delete_task(task_id):
@@ -97,20 +88,44 @@ def delete_task(task_id):
     flash('Task deleted!', 'warning')
     return redirect(url_for('index'))
 
-@app.route('/complete/<int:task_id>', methods=['POST'])
-def complete_task(task_id):
+@app.route('/edit/<int:task_id>', methods=['GET', 'POST'])
+def edit_task(task_id):
     task = Task.query.get_or_404(task_id)
-    task.completed = True  # ✅ NOW WORKS
-    db.session.commit()
-    flash('Task completed!', 'success')
-    return redirect(url_for('index'))
+    form = TaskForm()
+    
+    if request.method == 'GET':
+        form.task.data = task.title
+        form.due_date.data = task.due_date
+        form.task_time.data = task.task_time
+        form.category.data = task.category
+        
+    if form.validate_on_submit():
+        task.title = form.task.data
+        task.due_date = form.due_date.data
+        task.task_time = form.task_time.data
+        task.category = form.category.data
+        db.session.commit()
+        flash('Task updated!', 'success')
+        return redirect(url_for('index'))
+        
+    return render_template('edit_task.html', form=form, task=task)
 
 if __name__ == '__main__':
+    # Delete old database and create fresh one
+    if os.path.exists('tasks.db'):
+        os.remove('tasks.db')
+        print("Deleted old database")
+        
     with app.app_context():
-        db.drop_all()  # Delete old broken database
-        db.create_all() # Create new database with correct schema
-        print("✅ Database created with completed field!")
+        db.create_all()
+        print("Created fresh database")
+        
+    print('Starting app on http://127.0.0.1:5000')
     app.run(debug=True)
+
+
+
+
 #TAB icon
 from flask import send_from_directory
 import os
@@ -206,7 +221,7 @@ from datetime import date, timedelta, datetime
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
-app.config['SECRET_KEY'] = 'daysavvy-secret-key-2025-change-in-production'
+app.config['SECRET_KEY'] = 'arham0564'
 
 # Global variables
 tasks = []

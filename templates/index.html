@@ -631,16 +631,36 @@ function startVoiceRecognition() {
     {% set incomplete_tasks = tasks | selectattr('completed', 'equalto', False) | list %}
     {% set completed_tasks  = tasks | selectattr('completed', 'equalto', True)  | list %}
 
+    
+<!-- Debug info at top -->
+<div class="alert alert-warning">
+    <strong>DEBUG:</strong> 
+    Incomplete: {{ incomplete_tasks|length }} | 
+    Completed: {{ completed_tasks|length }} | 
+    Total: {{ (incomplete_tasks + completed_tasks)|length }}
+</div>
+
+<!-- Test section to show ALL tasks -->
+<div class="alert alert-info">
+    <strong>ALL TASKS:</strong>
+    {% for task in incomplete_tasks + completed_tasks %}
+        <br>{{ task.title }} (Completed: {{ task.completed }})
+        {% if task.task_time %}
+            - Time: {{ task.task_time.strftime('%H:%M') }}
+        {% endif %}
+    {% endfor %}
+</div>
+
 <!-- Incomplete Tasks Section -->
-<h6 class="mt-3">Incomplete</h6>
+<h6 class="mt-3">Incomplete Tasks</h6>
 <div class="row">
   {% if incomplete_tasks %}
     {% for task in incomplete_tasks %}
-      <div class="col-12">
+      <div class="col-12 mb-2">
         <div class="card shadow-sm">
           <div class="card-body d-flex justify-content-between align-items-center">
             <span>
-              <strong>{{ task.name }}</strong>
+              <strong>{{ task.title }}</strong>
               {% if task.due_date %}
                 {% if task.due_date < current_date %}
                   <span class="badge bg-danger ms-2">Overdue!</span>
@@ -672,20 +692,22 @@ function startVoiceRecognition() {
       </div>
     {% endfor %}
   {% else %}
-    <p class="text-muted">No incomplete tasks.</p>
+    <div class="alert alert-warning">
+      <p class="text-muted">No incomplete tasks found. Check the debug info above.</p>
+    </div>
   {% endif %}
 </div>
 
 <!-- Completed Tasks Section -->
-<h6 class="mt-4">Completed</h6>
+<h6 class="mt-4">Completed Tasks</h6>
 <div class="row">
   {% if completed_tasks %}
     {% for task in completed_tasks %}
-      <div class="col-12">
+      <div class="col-12 mb-2">
         <div class="card bg-light shadow-sm">
           <div class="card-body d-flex justify-content-between align-items-center">
             <span class="completed-task">
-              <strong>{{ task.name }}</strong>
+              <strong>{{ task.title }}</strong>
               {% if task.due_date %}
                 <span class="badge bg-secondary ms-2">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
               {% endif %}
@@ -708,16 +730,12 @@ function startVoiceRecognition() {
       </div>
     {% endfor %}
   {% else %}
-    <p class="text-muted">No completed tasks.</p>
+    <div class="alert alert-info">
+      <p class="text-muted">No completed tasks.</p>
+    </div>
   {% endif %}
 </div>
 
-<!-- Display task with time -->
-<strong>{{ task.title }}</strong>
-
-{% if task.task_time %}
-    <span class="badge bg-info ms-2">🕒 {{ task.task_time.strftime('%I:%M %p') }}</span>
-{% endif %}
 
   <!-- Theme toggle logic -->
   <script>
