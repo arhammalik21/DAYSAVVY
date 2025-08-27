@@ -23,6 +23,9 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 csrf = CSRFProtect(app)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
+
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -45,6 +48,10 @@ class TaskForm(FlaskForm):
     task_time = TimeField('Time', validators=[Optional()])
     category = SelectField('Category', choices=[('Work','Work'),('Personal','Personal'),('Study','Study'),('Other','Other')])
     submit = SubmitField('Add Task')
+
+    import os
+print(f"Template folder: {os.path.abspath(app.template_folder)}")
+
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -74,11 +81,14 @@ def index():
     for task in all_tasks:
         print(f'  Task: {task.title}, Completed: {task.completed}')
 
+    incomplete_tasks = [t for t in all_tasks if not t.completed]
+    completed_tasks = [t for t in all_tasks if t.completed]
+    
     return render_template('index.html', 
-                     form=form,
-                     incomplete_tasks=incomplete_tasks, 
-                     completed_tasks=completed_tasks, 
-                     current_date=date.today())
+                         form=form,
+                         incomplete_tasks=incomplete_tasks,  # No backslashes
+                         completed_tasks=completed_tasks,    # No backslashes
+                         current_date=date.today())
 
 
 @app.route('/complete/<int:task_id>', methods=['POST'])
@@ -94,6 +104,15 @@ def delete_task(task_id):
     db.session.delete(task)
     db.session.commit()
     return redirect(url_for('index'))
+
+@app.after_request
+def add_header(response):
+    """Force no caching on any response"""
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
 
 @app.route('/edit/<int:task_id>', methods=['GET', 'POST'])
 def edit_task(task_id):
