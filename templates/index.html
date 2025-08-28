@@ -1,3 +1,4 @@
+task.title
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -51,6 +52,103 @@
     #themeToggle, #themeToggle:focus, #themeToggle:hover, #themeToggle:active {
       border: none !important; box-shadow: none !important;
     }
+
+    /* Logo/title styles preserved from original */
+    .logo-title-container {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      gap: 0 !important;
+      margin: 20px 0 !important;
+      padding: 10 !important;
+    }
+
+    .logo {
+      width: 200px !important;
+      height: 200px !important;
+      margin: 0 -40px 0 0 !important;
+      padding: 10 !important;
+      display: block !important;
+    }
+
+    .text-section {
+      display: flex !important;
+      flex-direction: column !important;
+      justify-content: center !important;
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+
+    .title {
+      font-size: 3.5rem !important;
+      font-weight: bold !important;
+      color: #4a90e2 !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      letter-spacing: 2px !important;
+      line-height: 1 !important;
+    }
+
+    .tagline {
+      font-size: 1.3rem !important;
+      color: #8b5fbf !important;
+      margin: 8px 0 0 0 !important;
+      padding: 0 !important;
+      font-weight: 500 !important;
+    }
+
+    /* Buttons and mic visuals kept */
+    .btn-ai-mic {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        border: none;
+        color: white;
+        padding: 12px 24px;
+        border-radius: 50px;
+        font-weight: bold;
+        box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .btn-ai-mic:hover { transform: translateY(-3px); box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4); background: linear-gradient(135deg, #764ba2 0%, #667eea 100%); }
+    .btn-ai-mic:active { transform: translateY(-1px); }
+    .btn-ai-mic i { font-size: 20px; }
+    .mic-text { font-size: 14px; letter-spacing: 0.5px; }
+
+    .btn-ai-mic.listening {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+        animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+        0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+        70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
+    }
+
+    #stopBtn {
+        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+        border: none;
+        color: white;
+        padding: 12px 20px;
+        border-radius: 50px;
+        font-weight: bold;
+        box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    #stopBtn:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
+        background: linear-gradient(135deg, #ee5a24 0%, #ff6b6b 100%);
+    }
+    #stopBtn i { font-size: 18px; }
+
   </style>
 </head>
 
@@ -61,57 +159,9 @@
   <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo" class="logo">
   <div class="text-section">
     <h1 class="title">DaySavvy</h1>
-    <p class="tagline">A SuperAI that can save your day</p>
+    <p class="tagline">A SuperAI that can save your day</p> 
   </div>
 </div>
-
-<style>
-.logo-title-container {
-  display: flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 0 !important;
-  margin: 20px 0 !important;
-  padding: 10 !important;
-}
-
-.logo {
-  width: 200px !important;
-  height: 200px !important;
-  margin: 0 -40px 0 0 !important;
-  padding: 10 !important;
-  display: block !important;
-}
-
-.text-section {
-  display: flex !important;
-  flex-direction: column !important;
-  justify-content: center !important;
-  margin: 0 !important;
-  padding: 0 !important;
-}
-
-.title {
-  font-size: 3.5rem !important;
-  font-weight: bold !important;
-  color: #4a90e2 !important;
-  margin: 0 !important;
-  padding: 0 !important;
-  letter-spacing: 2px !important;
-  line-height: 1 !important;
-}
-
-.tagline {
-  font-size: 1.3rem !important;
-  color: #8b5fbf !important;
-  margin: 8px 0 0 0 !important;
-  padding: 0 !important;
-  font-weight: 500 !important;
-}
-</style>
-
-
-
 
   <!-- Minimal navbar with theme toggle aligned right -->
   <nav class="navbar px-3 mb-2 bg-transparent">
@@ -198,33 +248,41 @@
         </form>
       </div>
     </div>
-</form>
 
-<!--AI voice command-->
+<!-- AI voice command block -->
 <div class="mb-3">
-    <button id="voiceBtn" class="btn btn-ai-mic" onclick="startVoiceControl()">
+    <button id="voiceBtn" class="btn btn-ai-mic" onclick="startVoiceControl()" aria-label="Start voice">
         <i class="material-icons-outlined">mic</i>
         <span class="mic-text">AI Voice</span>
     </button>
-    <button id="stopBtn" class="btn btn-danger ms-2" onclick="stopVoiceControl()" style="display: none;">
+    <button id="stopBtn" class="btn btn-danger ms-2" onclick="stopVoiceControl()" style="display: none;" aria-label="Stop voice">
         <i class="material-icons-outlined">stop</i>
         Stop
     </button>
     <div id="voiceStatus" class="mt-2 text-muted">Click Start Voice to begin</div>
 </div>
 
-<!--Talk back with some questions-->
-
+<!-- Consolidated voice JS: fixed duplicates and ensured flow -->
 <script>
+/*
+  Voice recognition script
+  - Single set of functions (startVoiceControl, startListening, stopVoiceControl)
+  - Posts final transcript JSON to /voice/command
+  - Handles response fields: message, reload_page, continue_listening
+*/
+
+/* state */
 let isListening = false;
 let recognition = null;
 
+/* start voice flow */
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         document.getElementById('voiceStatus').textContent = 'Speech not supported. Use Chrome.';
         return;
     }
     
+    if (isListening) return; // avoid double start
     isListening = true;
     document.getElementById('voiceBtn').classList.add('listening');
     document.getElementById('stopBtn').style.display = 'inline-block';
@@ -238,7 +296,7 @@ function startListening() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = true; // FASTER: Show partial results
+    recognition.interimResults = true; // show partial results
     recognition.lang = 'en-US';
     
     recognition.onstart = () => {
@@ -249,29 +307,27 @@ function startListening() {
         const lastResult = event.results[event.results.length - 1];
         const transcript = lastResult[0].transcript.trim();
         
-        // Show partial results for faster feedback
         if (!lastResult.isFinal) {
             document.getElementById('voiceStatus').textContent = `Hearing: "${transcript}"`;
             return;
         }
         
-        // Final result - process command
         recognition.stop();
         document.getElementById('voiceStatus').textContent = `Processing: "${transcript}"`;
         
-        fetch('/voice/command', {
+        fetch('{{ url_for("voice_command") }}', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ transcript })
         })
         .then(r => r.json())
         .then(data => {
-            document.getElementById('voiceStatus').textContent = data.message;
+            document.getElementById('voiceStatus').textContent = data.message || 'No message';
             
             if ('speechSynthesis' in window && data.message) {
                 speechSynthesis.cancel();
                 const utterance = new SpeechSynthesisUtterance(data.message);
-                utterance.rate = 1.2; // FASTER: Speak 20% faster
+                utterance.rate = 1.2;
                 
                 utterance.onend = () => {
                     if (data.reload_page) {
@@ -279,10 +335,7 @@ function startListening() {
                     } else if (data.continue_listening === false) {
                         stopVoiceControl();
                     } else {
-                        // FASTER: Immediate restart
-                        setTimeout(() => {
-                            if (isListening) startListening();
-                        }, 200); // Reduced from 500ms to 200ms
+                        setTimeout(() => { if (isListening) startListening(); }, 200);
                     }
                 };
                 speechSynthesis.speak(utterance);
@@ -299,323 +352,51 @@ function startListening() {
     };
     
     recognition.onend = () => {
-        // Only restart if not handled by onresult
         if (isListening && !speechSynthesis.speaking) {
-            setTimeout(startListening, 100); // FASTER: Reduced delay
+            setTimeout(startListening, 100);
         }
     };
     
     recognition.onerror = (event) => {
         if (event.error !== 'no-speech') console.error('Recognition error:', event.error);
-        if (isListening) setTimeout(startListening, 300); // FASTER: Reduced delay
+        if (isListening) setTimeout(startListening, 300);
     };
     
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (err) {
+      // ignore multiple-start error; restart gracefully
+      console.warn('recognition.start error', err);
+    }
 }
 
+/* stop voice flow */
 function stopVoiceControl() {
     isListening = false;
-    if (recognition) recognition.stop();
+    if (recognition) try { recognition.stop(); } catch(e){}
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     
-    document.getElementById('voiceBtn').classList.remove('listening');
-    document.getElementById('stopBtn').style.display = 'none';
+    const voiceBtn = document.getElementById('voiceBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    if (voiceBtn) voiceBtn.classList.remove('listening');
+    if (stopBtn) stopBtn.style.display = 'none';
     document.getElementById('voiceStatus').textContent = 'Voice control stopped';
 }
+
+/* allow stop button to work if user clicks it */
+document.addEventListener('DOMContentLoaded', () => {
+  const stopBtn = document.getElementById('stopBtn');
+  if (stopBtn) stopBtn.addEventListener('click', stopVoiceControl);
+});
 </script>
 
 <!-- Add Material Icons -->
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
 
-<style>
-.btn-ai-mic {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border: none;
-    color: white;
-    padding: 12px 24px;
-    border-radius: 50px;
-    font-weight: bold;
-    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3);
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.btn-ai-mic:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
-    background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
-}
-
-.btn-ai-mic:active {
-    transform: translateY(-1px);
-}
-
-.btn-ai-mic i {
-    font-size: 20px;
-}
-
-.mic-text {
-    font-size: 14px;
-    letter-spacing: 0.5px;
-}
-
-/* Pulsing animation when listening */
-.btn-ai-mic.listening {
-    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
-    animation: pulse 1s infinite;
-}
-
-@keyframes pulse {
-    0% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
-    70% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0); }
-}
-
-#stopBtn {
-    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
-    border: none;
-    color: white;
-    padding: 12px 20px;
-    border-radius: 50px;
-    font-weight: bold;
-    box-shadow: 0 8px 15px rgba(0, 0, 0, 0.3);
-    transition: all 0.3s ease;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-#stopBtn:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
-    background: linear-gradient(135deg, #ee5a24 0%, #ff6b6b 100%);
-}
-#stopBtn i {
-    font-size: 18px;
-}
-</style>
-
-<!--JS codes for AI voice command-->
-<script>
-function startVoiceRecognition() {
-    const status = document.getElementById('voiceStatus');
-    const btn = document.getElementById('voiceBtn');
-    
-    // Check browser support
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-        status.textContent = '❌ Speech recognition not supported. Use Chrome browser.';
-        status.style.color = 'red';
-        return;
-    }
-    
-    // Check if already listening
-    if (btn.disabled) return;
-    
-    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-    
-    // Configure recognition
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    
-    // UI feedback
-    btn.textContent = '🔴 Listening...';
-    btn.disabled = true;
-    status.textContent = '🎤 Speak now... (say "add buy milk")';
-    status.style.color = 'blue';
-    
-    // Start recognition
-    try {
-        recognition.start();
-    } catch (error) {
-        status.textContent = '❌ Error starting recognition: ' + error.message;
-        resetButton();
-        return;
-    }
-    
-    // Handle successful speech recognition
-    recognition.onresult = function(event) {
-        const transcript = event.results[0][0].transcript;
-        const confidence = event.results.confidence;
-        
-        console.log('Speech recognized:', transcript, 'Confidence:', confidence);
-        status.textContent = `You said: "${transcript}" (${Math.round(confidence * 100)}% confident)`;
-        status.style.color = 'green';
-        
-        // Send to Flask
-        fetch('/voice/command', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({transcript: transcript})
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            status.textContent = '✅ ' + data.message;
-            status.style.color = data.success ? 'green' : 'orange';
-            if (data.success) {
-                setTimeout(() => location.reload(), 1500);
-            }
-        })
-        .catch(error => {
-            status.textContent = '❌ Network error: ' + error.message;
-            status.style.color = 'red';
-        });
-    };
-    
-    // Handle speech recognition errors
-    recognition.onerror = function(event) {
-        console.error('Speech recognition error:', event.error);
-        let errorMsg = '';
-        
-        switch(event.error) {
-            case 'no-speech':
-                errorMsg = '❌ No speech detected. Speak louder and closer to mic.';
-                break;
-            case 'audio-capture':
-                errorMsg = '❌ Microphone not accessible. Check permissions.';
-                break;
-            case 'not-allowed':
-                errorMsg = '❌ Microphone access denied. Enable in browser settings.';
-                break;
-            case 'network':
-                errorMsg = '❌ Network error. Check internet connection.';
-                break;
-            case 'language-not-supported':
-                errorMsg = '❌ Language not supported. Try Chrome browser.';
-                break;
-            default:
-                errorMsg = `❌ Speech error: ${event.error}`;
-        }
-        
-        status.textContent = errorMsg;
-        status.style.color = 'red';
-        resetButton();
-    };
-    
-    // Handle end of recognition
-    recognition.onend = function() {
-        console.log('Speech recognition ended');
-        resetButton();
-        
-        if (status.textContent === '🎤 Speak now... (say "add buy milk")') {
-            status.textContent = '❌ No speech heard. Try again and speak clearly.';
-            status.style.color = 'red';
-        }
-    };
-    
-    // Timeout after 10 seconds
-    setTimeout(() => {
-        if (btn.disabled) {
-            recognition.stop();
-            status.textContent = '⏰ Timeout. Click and try again.';
-            status.style.color = 'orange';
-            resetButton();
-        }
-    }, 10000);
-    
-    function resetButton() {
-        btn.textContent = '🎤 Voice Command';
-        btn.disabled = false;
-    }
-}
-</script>
-
-<!--AI Voice replies-->
-<script>
-// Add this function for voice replies
-function speakText(text) {
-    if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 0.8;
-        utterance.pitch = 1;
-        utterance.volume = 0.8;
-        speechSynthesis.speak(utterance);
-    }
-}
-
-function startVoiceRecognition() {
-    const status = document.getElementById('voiceStatus');
-    const btn = document.getElementById('voiceBtn');
-    
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-        status.textContent = '❌ Speech recognition not supported. Use Chrome browser.';
-        return;
-    }
-    
-    const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
-    
-    recognition.lang = 'en-US';
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    
-    btn.textContent = '🔴 Listening...';
-    btn.disabled = true;
-    status.textContent = '🎤 Speak your command...';
-    
-    recognition.start();
-    
-    recognition.onresult = function(event) {
-        const transcript = event.results[0][0].transcript;
-        status.textContent = `You said: "${transcript}"`;
-        
-        fetch('/voice/command', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({transcript: transcript})
-        })
-        .then(response => response.json())
-        .then(data => {
-            status.textContent = data.success ? '✅ ' + data.message : '❌ ' + data.message;
-            
-            // ADD VOICE REPLY HERE
-            speakText(data.message);  // This makes it talk back!
-            
-            if (data.success) {
-                setTimeout(() => location.reload(), 2000);
-            }
-        })
-        .catch(error => {
-            status.textContent = '❌ Error: ' + error.message;
-            speakText('Sorry, there was an error processing your command.');
-        });
-    };
-    
-    recognition.onerror = function(event) {
-        let errorMsg = event.error === 'no-speech' ? 
-            'No speech detected. Try again.' : 
-            'Speech error: ' + event.error;
-        
-        status.textContent = '❌ ' + errorMsg;
-        speakText(errorMsg);
-        resetButton();
-    };
-    
-    recognition.onend = function() {
-        resetButton();
-    };
-    
-    function resetButton() {
-        btn.textContent = '🎤 Voice Command';
-        btn.disabled = false;
-    }
-}
-</script>
-
-
+<!-- Small extra voice helper removed (duplicate) - kept only consolidated functions above -->
 
 <form method="post">
     {{ form.hidden_tag() }}
-    
 </form>
 
     <!-- Tasks header with hint about current filter state -->
@@ -647,7 +428,7 @@ function startVoiceRecognition() {
         <h5>Incomplete Tasks:</h5>
         <ul>
         {% for task in incomplete_tasks %}
-            <li>{{ task.title }} - {{ task.category }} 
+            <li>{{ task.name }} - {{ task.category }} 
                 {% if task.task_time %}({{ task.task_time.strftime('%H:%M') }}){% endif %}
             </li>
         {% endfor %}
@@ -659,10 +440,13 @@ function startVoiceRecognition() {
 <!-- TASK SECTIONS  -->
 <h2>All Tasks ({{ (incomplete_tasks + completed_tasks)|length }} total)</h2>
 
-{% for task in incomplete_tasks + completed_tasks %}
+{# show incomplete first then completed, using separate loops so UI and actions are clear #}
+
+{% if incomplete_tasks %}
+  {% for task in incomplete_tasks %}
     <div class="card mb-2">
         <div class="card-body">
-            <strong>{{ task.title }}</strong>
+            <strong>{{ task.name }}</strong>
             
             {% if task.due_date %}
                 <span class="badge bg-secondary">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
@@ -676,23 +460,56 @@ function startVoiceRecognition() {
             
             {% if not task.completed %}
                 <form method="POST" action="{{ url_for('complete_task', task_id=task.id) }}" style="display: inline;">
+                    {{ form.csrf_token }}
                     <button type="submit" class="btn btn-success btn-sm">Complete</button>
                 </form>
             {% endif %}
             
             <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-warning btn-sm">Edit</a>
             
-            <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" style="display: inline;">
-                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('Delete?')">Delete</button>
+            <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" style="display: inline;" onsubmit="return confirm('Delete?')">
+                {{ form.csrf_token }}
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
             </form>
         </div>
     </div>
+  {% endfor %}
 {% else %}
-    <div class="alert alert-warning">
-        <p>No tasks found! </p>
-    </div>
-{% endfor %}
+  <div class="alert alert-warning">
+    <p>No incomplete tasks found!</p>
+  </div>
+{% endif %}
 
+<hr>
+
+{% if completed_tasks %}
+  {% for task in completed_tasks %}
+    <div class="card mb-2">
+        <div class="card-body completed-task">
+            <strong>{{ task.name }}</strong>
+            
+            {% if task.due_date %}
+                <span class="badge bg-secondary">Due: {{ task.due_date.strftime('%Y-%m-%d') }}</span>
+            {% endif %}
+            
+            {% if task.task_time %}
+                <span class="badge bg-info">🕒 {{ task.task_time.strftime('%I:%M %p') }}</span>
+            {% endif %}
+            
+            <span class="badge bg-primary">{{ task.category }}</span>
+            
+            <a href="{{ url_for('edit_task', task_id=task.id) }}" class="btn btn-warning btn-sm">Edit</a>
+            
+            <form method="POST" action="{{ url_for('delete_task', task_id=task.id) }}" style="display: inline;" onsubmit="return confirm('Delete?')">
+                {{ form.csrf_token }}
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+            </form>
+        </div>
+    </div>
+  {% endfor %}
+{% else %}
+  <div class="alert alert-secondary">No completed tasks yet</div>
+{% endif %}
 
   <!-- Theme toggle logic -->
   <script>
