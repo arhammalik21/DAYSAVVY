@@ -99,11 +99,13 @@
 <!-- Time Field -->
 <div id="editTimeFields" class="time-fields">
     <div class="mb-3">
-        <label for="edit_start_time" class="form-label">Time:</label>
-        <input type="time" name="start_time" id="edit_start_time" class="form-control"
-               value="{{ task.start_time.strftime('%H:%M') if task.start_time else '' }}">
+        <label for="edit_task_time" class="form-label">Time:</label>
+        <input type="time" name="task_time" id="edit_task_time" class="form-control"
+               value="{{ task.task_time.strftime('%H:%M') if task.task_time else '' }}">
     </div>
 </div>
+
+
 
 
                     <!-- Action Buttons -->

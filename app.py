@@ -418,9 +418,10 @@ def api_update_task(task_id):
             pass
     if "task_time" in data:
         try:
-            t.task_time = datetime.strptime(data.get("task_time"), "%H:%M:%S").time() if data.get("task_time") else None
+            t.task_time = datetime.strptime(data.get("task_time"), "%H:%M").time() if data.get("task_time") else None
         except Exception:
             pass
+
     if "category" in data:
         t.category = data.get("category", t.category)
     if "completed" in data:
