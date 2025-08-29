@@ -21,9 +21,6 @@
             border-left: 3px solid #007bff;
             transition: all 0.3s ease;
         }
-        .time-fields.hidden {
-            display: none;
-        }
         input[type="time"] {
             width: 100%;
             padding: 8px 12px;
@@ -36,10 +33,6 @@
             border-color: #007bff;
             outline: none;
             box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
-        }
-        input[type="checkbox"] {
-            margin-right: 8px;
-            transform: scale(1.1);
         }
     </style>
 </head>
@@ -103,27 +96,16 @@
                         {% endif %}
                     </div>
 
-                    <!-- Time Fields -->
-                    {% if task.is_all_day %}
-                    <div id="editTimeFields" class="time-fields hidden">
-                    {% else %}
-                    <div id="editTimeFields" class="time-fields">
-                    {% endif %}
-                        <div class="mb-3">
-                            <label for="edit_start_time">Start Time:</label>
-                            <input type="time" name="start_time" id="edit_start_time" class="form-control"
-                                   value="{% if task.start_time %}{{ task.start_time.strftime('%H:%M') }}{% endif %}">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="edit_end_time">End Time:</label>
-                            <input type="time" name="end_time" id="edit_end_time" class="form-control"
-                                   value="{% if task.end_time %}{{ task.end_time.strftime('%H:%M') }}{% endif %}">
-                        </div>
-                        
-                        <div id="edit-duration-display" style="margin-top: 10px; color: #28a745; font-weight: bold; font-size: 0.9em;"></div>
-                    </div>
-                    
+<!-- Time Field -->
+<div id="editTimeFields" class="time-fields">
+    <div class="mb-3">
+        <label for="edit_start_time" class="form-label">Time:</label>
+        <input type="time" name="start_time" id="edit_start_time" class="form-control"
+               value="{{ task.start_time.strftime('%H:%M') if task.start_time else '' }}">
+    </div>
+</div>
+
+
                     <!-- Action Buttons -->
                     <button type="submit" class="btn btn-success w-100">✅ Update Task</button>
                     <a href="{{ url_for('index') }}" class="btn btn-secondary w-100 mt-2">⬅️ Cancel</a>
@@ -133,65 +115,5 @@
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-
-    <script>
-    // Toggle time fields
-    document.getElementById('editAllDayCheckbox').addEventListener('change', function() {
-        const timeFields = document.getElementById('editTimeFields');
-        if (this.checked) {
-            timeFields.classList.add('hidden');
-            document.getElementById('edit_start_time').value = '';
-            document.getElementById('edit_end_time').value = '';
-            document.getElementById('edit-duration-display').textContent = '';
-        } else {
-            timeFields.classList.remove('hidden');
-        }
-    });
-
-    // Validate end time is after start time
-    document.getElementById('edit_end_time').addEventListener('change', function() {
-        const startTime = document.getElementById('edit_start_time').value;
-        const endTime = this.value;
-        
-        if (startTime && endTime && endTime <= startTime) {
-            alert('⚠️ End time must be after start time');
-            this.value = '';
-            document.getElementById('edit-duration-display').textContent = '';
-        } else {
-            updateEditDuration();
-        }
-    });
-
-    // Calculate and display duration
-    function updateEditDuration() {
-        const startTime = document.getElementById('edit_start_time').value;
-        const endTime = document.getElementById('edit_end_time').value;
-        const durationDisplay = document.getElementById('edit-duration-display');
-        
-        if (startTime && endTime) {
-            const start = new Date(`2000-01-01 ${startTime}`);
-            const end = new Date(`2000-01-01 ${endTime}`);
-            const duration = (end - start) / (1000 * 60);
-            
-            if (duration > 0) {
-                const hours = Math.floor(duration / 60);
-                const minutes = duration % 60;
-                const durationText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-                durationDisplay.innerHTML = `⏱️ Duration: <strong>${durationText}</strong>`;
-            } else {
-                durationDisplay.textContent = '';
-            }
-        } else {
-            durationDisplay.textContent = '';
-        }
-    }
-
-    document.getElementById('edit_start_time').addEventListener('change', updateEditDuration);
-
-    // Initialize on page load
-    document.addEventListener('DOMContentLoaded', function() {
-        updateEditDuration();
-    });
-    </script>
 </body>
 </html>
