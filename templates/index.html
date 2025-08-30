@@ -11,6 +11,7 @@
   <title>DaySavvy</title>
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
 <link rel="shortcut icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
 
   <!-- Bootstrap CSS and Google Font -->
@@ -263,25 +264,16 @@
 
 <!-- Consolidated voice JS: fixed duplicates and ensured flow -->
 <script>
-/*
-  Voice recognition script
-  - Single set of functions (startVoiceControl, startListening, stopVoiceControl)
-  - Posts final transcript JSON to /voice/command
-  - Handles response fields: message, reload_page, continue_listening
-*/
-
-/* state */
 let isListening = false;
 let recognition = null;
 
-/* start voice flow */
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         document.getElementById('voiceStatus').textContent = 'Speech not supported. Use Chrome.';
         return;
     }
-    
-    if (isListening) return; // avoid double start
+
+    if (isListening) return; 
     isListening = true;
     document.getElementById('voiceBtn').classList.add('listening');
     document.getElementById('stopBtn').style.display = 'inline-block';
@@ -291,43 +283,48 @@ function startVoiceControl() {
 
 function startListening() {
     if (!isListening) return;
-    
+
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = true; // show partial results
+    recognition.interimResults = true;
     recognition.lang = 'en-US';
-    
+
     recognition.onstart = () => {
         document.getElementById('voiceStatus').textContent = 'Listening...';
     };
-    
+
     recognition.onresult = (event) => {
         const lastResult = event.results[event.results.length - 1];
         const transcript = lastResult[0].transcript.trim();
-        
+
         if (!lastResult.isFinal) {
             document.getElementById('voiceStatus').textContent = `Hearing: "${transcript}"`;
             return;
         }
-        
+
         recognition.stop();
         document.getElementById('voiceStatus').textContent = `Processing: "${transcript}"`;
-        
-        fetch('{{ url_for("voice_command") }}', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ transcript })
-        })
+
+        // ✅ FIXED fetch URL
+        fetch("/voice/command", {
+    method: "POST",
+    headers: {
+        "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ transcript })
+})
+
         .then(r => r.json())
         .then(data => {
+            console.log("Server response:", data); // ✅ Debug
             document.getElementById('voiceStatus').textContent = data.message || 'No message';
-            
+
             if ('speechSynthesis' in window && data.message) {
                 speechSynthesis.cancel();
                 const utterance = new SpeechSynthesisUtterance(data.message);
                 utterance.rate = 1.2;
-                
+
                 utterance.onend = () => {
                     if (data.reload_page) {
                         setTimeout(() => location.reload(), 500);
@@ -349,40 +346,35 @@ function startListening() {
             setTimeout(() => { if (isListening) startListening(); }, 500);
         });
     };
-    
+
     recognition.onend = () => {
         if (isListening && !speechSynthesis.speaking) {
             setTimeout(startListening, 100);
         }
     };
-    
+
     recognition.onerror = (event) => {
         if (event.error !== 'no-speech') console.error('Recognition error:', event.error);
         if (isListening) setTimeout(startListening, 300);
     };
-    
+
     try {
       recognition.start();
     } catch (err) {
-      // ignore multiple-start error; restart gracefully
       console.warn('recognition.start error', err);
     }
 }
 
-/* stop voice flow */
 function stopVoiceControl() {
     isListening = false;
     if (recognition) try { recognition.stop(); } catch(e){}
     if ('speechSynthesis' in window) speechSynthesis.cancel();
-    
-    const voiceBtn = document.getElementById('voiceBtn');
-    const stopBtn = document.getElementById('stopBtn');
-    if (voiceBtn) voiceBtn.classList.remove('listening');
-    if (stopBtn) stopBtn.style.display = 'none';
+
+    document.getElementById('voiceBtn').classList.remove('listening');
+    document.getElementById('stopBtn').style.display = 'none';
     document.getElementById('voiceStatus').textContent = 'Voice control stopped';
 }
 
-/* allow stop button to work if user clicks it */
 document.addEventListener('DOMContentLoaded', () => {
   const stopBtn = document.getElementById('stopBtn');
   if (stopBtn) stopBtn.addEventListener('click', stopVoiceControl);

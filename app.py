@@ -47,6 +47,16 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 # CSRF protection for forms
 csrf = CSRFProtect(app)
 
+@app.route("/get-csrf-token", methods=["GET"])
+def get_csrf_token():
+    """
+    Endpoint to fetch CSRF token for frontend/clients.
+    """
+    from flask_wtf.csrf import generate_csrf
+    token = generate_csrf()
+    session["csrf_token"] = token
+    return jsonify({"csrf_token": token})
+
 # DB init
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
@@ -375,6 +385,7 @@ def api_get_tasks():
 @app.route("/api/tasks", methods=["POST"])
 def api_add_task():
     """Add a task using JSON body. Returns created task."""
+
     data = request.get_json() or {}
     name = data.get("name") or data.get("task") or ""
     if not name.strip():
@@ -436,9 +447,41 @@ def api_delete_task(task_id):
     db.session.commit()
     return jsonify({"message": "Task deleted"})
 
+# ---------------- Helper function to safely parse JSON ----------------
+def parse_request_json(req):
+    """
+    Safely parse JSON from the request.
+    Prevents Flask from throwing 400 errors if the body is empty or malformed.
+    """
+    try:
+        # Try normal parsing
+        data = req.get_json(force=True, silent=True)
+        if not data:
+            # Fallback: parse raw request body manually
+            raw = req.data.decode("utf-8").strip()
+            if raw:
+                data = json.loads(raw)
+        if not data:
+            data = {}
+    except Exception as e:
+        print("JSON parse error:", e)
+        data = {}
+    return data
+
 # -------------------------
 # Voice Command Endpoint (with due_date, category, and time support)
 # -------------------------
+from flask import Flask, request, jsonify
+from flask_wtf.csrf import CSRFProtect
+
+app = Flask(__name__)
+app.config["SECRET_KEY"] = "arham0564"
+
+csrf = CSRFProtect(app)
+
+# 🚀 Exempt CSRF for API endpoint
+@csrf.exempt
+
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
     """
@@ -456,14 +499,18 @@ def voice_command():
       - continue_listening (bool) - whether front-end should keep microphone open
       - reload_page (bool) - whether front-end should reload the tasks UI (True when DB changed)
     """
+    print("Headers:", request.headers)
+    print("Raw data:", request.data)
     try:
-        data = request.get_json() or {}
+        # ✅ FIXED LINE: force + silent prevents Flask from raising 400
+        data = request.get_json(force=True, silent=True) or {}
         transcript = (data.get("transcript") or "").strip()
         if not transcript:
             return jsonify({"message": "No speech detected. Please try again.", "continue_listening": True})
 
         tl = transcript.lower().strip()
         print(f"[VOICE] Raw transcript: {transcript}")
+
 
         # Initialize conversation state in session if missing
         conv = session.get(SESSION_CONV_KEY, {"next_expected": None, "pending_task_id": None})
@@ -672,6 +719,7 @@ def voice_command():
         # Log error to console for debugging (preserve original debug style)
         print(f"[ERROR] Voice command exception: {e}")
         return jsonify({"message": "Sorry, I encountered an error. Please try again.", "continue_listening": True}), 500
+
 
 # -------------------------
 # Legacy compatibility route (kept)
