@@ -474,278 +474,136 @@ def parse_request_json(req):
 # -------------------------
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
-    """
-    Main voice endpoint. Expects JSON: { "transcript": "<text>" }
-    Conversation flow (FSM stored in session):
-      - If user says "add X" -> create DB task with name X, then set conversation state to expect due_date
-      - When expecting due_date: parse "today", "tomorrow", explicit date, or "skip"
-        -> set due_date then ask for time (or allow time in same phrase)
-      - Parse time whenever present in the transcript (e.g., "at 5 pm")
-      - After due_date step, next expected is "time" or "category" depending on what you want.
-        In this implementation we will ask for due_date -> time(optional) -> category
-      - For delete/complete/list we try to match tasks by partial name (case-insensitive)
-    Returns JSON:
-      - message (string) - user-facing text
-      - continue_listening (bool) - whether front-end should keep microphone open
-      - reload_page (bool) - whether front-end should reload the tasks UI (True when DB changed)
-    """
-    print("Headers:", request.headers)
-    print("Raw data:", request.data)
-    try:
-        # ✅ FIXED LINE: force + silent prevents Flask from raising 400
-        data = request.get_json(force=True, silent=True) or {}
-        transcript = (data.get("transcript") or "").strip()
-        if not transcript:
-            return jsonify({"message": "No speech detected. Please try again.", "continue_listening": True})
+    data = request.get_json(force=True, silent=True)
+    if not data or "transcript" not in data:
+        return jsonify({"error": "Invalid request. 'transcript' missing"}), 400
 
-        tl = transcript.lower().strip()
-        print(f"[VOICE] Raw transcript: {transcript}")
+    transcript = data["transcript"].strip().lower()
 
+    # Initialize session state
+    if "voice_flow" not in session:
+        session["voice_flow"] = {"mode": None, "step": None, "task": {}}
 
-        # Initialize conversation state in session if missing
-        conv = session.get(SESSION_CONV_KEY, {"next_expected": None, "pending_task_id": None})
-        expecting = conv.get("next_expected")
-        pending_id = conv.get("pending_task_id")
+    flow = session["voice_flow"]
+    mode = flow["mode"]
+    step = flow["step"]
+    task = flow["task"]
 
-        # STOP words + auto stop
-        if any(word in tl for word in STOP_WORDS):
-            session.pop(SESSION_CONV_KEY, None)
-            session.modified = True
-            return jsonify({"message": "Voice control stopped. Goodbye!", "continue_listening": False})
+    response_msg = ""
+    continue_listening = True
 
-        if any(phrase in tl for phrase in AUTO_STOP_PHRASES):
-            session.pop(SESSION_CONV_KEY, None)
-            session.modified = True
-            return jsonify({"message": "All done! Voice control stopped.", "continue_listening": False})
+    # ---------------------
+    # Handle Add Task
+    # ---------------------
+    if mode == "add":
+        if step == "title":
+            task["title"] = transcript
+            flow["step"] = "due"
+            response_msg = f"Adding '{task['title']}'. When is this due? Say 'today', 'tomorrow', a date, or 'skip'."
 
-        # If we are in the middle of an "add" conversation, handle follow-ups first
-        if expecting and pending_id:
-            # Fetch pending task from DB
-            pending_task = Task.query.get(pending_id)
-            if not pending_task:
-                # Task vanished; reset conversation
-                session.pop(SESSION_CONV_KEY, None)
-                session.modified = True
-                return jsonify({"message": "Pending task not found. Let's start again.", "continue_listening": True})
+        elif step == "due":
+            task["due"] = transcript
+            flow["step"] = "time"
+            response_msg = "Got it. What time is this due? Say 'skip' if none."
 
-            # 1) If expecting due_date: try to parse due date (or detect time+date in same phrase)
-            if expecting == "due_date":
-                # Try parsing due date from incoming phrase
-                dd = parse_due_date_from_text(tl)
-                tt = parse_time_from_text(tl)
-                if dd:
-                    pending_task.due_date = dd
-                # If time included, set it as well
-                if tt:
-                    pending_task.task_time = tt
+        elif step == "time":
+            task["time"] = transcript
+            flow["step"] = "category"
+            response_msg = "Great. Do you want to add a category? Say one or 'skip'."
+
+        elif step == "category":
+            task["category"] = transcript
+            flow["step"] = "confirm"
+            response_msg = f"Here’s what I got: {task}. Should I save this task? Say 'yes' or 'no'."
+
+        elif step == "confirm":
+            if transcript in ["yes", "yeah", "yup"]:
+                new_task = Task(
+                    title=normalize_task_name(task["title"]),
+                    due=task.get("due"),
+                    time=task.get("time"),
+                    category=task.get("category", "Other")
+                )
+                db.session.add(new_task)
                 db.session.commit()
-
-                # Move to time (if not provided) else category step
-                if not tt:
-                    conv["next_expected"] = "time"
-                    conv["pending_task_id"] = pending_id
-                    session[SESSION_CONV_KEY] = conv
-                    session.modified = True
-                    return jsonify({
-                        "message": "When should this happen? Say a time like 'at 5 pm', or say 'skip' to keep no time.",
-                        "continue_listening": True
-                    })
-                else:
-                    # Time included already, next ask for category
-                    conv["next_expected"] = "category"
-                    session[SESSION_CONV_KEY] = conv
-                    session.modified = True
-                    return jsonify({
-                        "message": f"Due date set to {pending_task.due_date.strftime('%b %d') if pending_task.due_date else 'unspecified'} and time set to {pending_task.task_time.strftime('%-I:%M %p') if pending_task.task_time else 'unspecified'}. What category? Say Work, Personal, Study, Health, or Other.",
-                        "continue_listening": True
-                    })
-
-            # 2) If expecting time
-            if expecting == "time":
-                # parse time
-                tt = parse_time_from_text(tl)
-                if "skip" in tl or "no" in tl:
-                    conv["next_expected"] = "category"
-                    session[SESSION_CONV_KEY] = conv
-                    session.modified = True
-                    return jsonify({"message": "No time set. What category? Say Work, Personal, Study, Health, or Other.", "continue_listening": True})
-                if tt:
-                    pending_task.task_time = tt
-                    db.session.commit()
-                    conv["next_expected"] = "category"
-                    session[SESSION_CONV_KEY] = conv
-                    session.modified = True
-                    return jsonify({"message": f"Time set to {tt.strftime('%-I:%M %p')}. What category? Say Work, Personal, Study, Health, or Other.", "continue_listening": True})
-                else:
-                    return jsonify({"message": "Please say a time like 'at 5 pm' or say 'skip'.", "continue_listening": True})
-
-            # 3) If expecting category
-            if expecting == "category":
-                chosen = "Other"
-                if "work" in tl:
-                    chosen = "Work"
-                elif "personal" in tl:
-                    chosen = "Personal"
-                elif "study" in tl or "education" in tl:
-                    chosen = "Study"
-                elif "health" in tl or "fitness" in tl:
-                    chosen = "Health"
-                # Update and finish conversation
-                pending_task.category = chosen
-                db.session.commit()
-                session.pop(SESSION_CONV_KEY, None)
-                session.modified = True
-                message = f"Perfect! Task '{pending_task.name}' added with category {chosen}."
-                # Optionally voice the reply
-                # speak_text_nonblocking(message)
-                return jsonify({"message": message, "continue_listening": True, "reload_page": True})
-
-        # If not in a multi-step conversation: parse main commands
-        # DELETE command
-        if "delete" in tl or "remove" in tl:
-            token = "delete" if "delete" in tl else "remove"
-            parts = tl.split(token, 1)
-            task_name = ""
-            if len(parts) > 1:
-                task_name = parts[1].replace("task", "").strip()
-            if not task_name:
-                return jsonify({"message": "What should I delete? Say 'delete shopping' or 'remove gym'.", "continue_listening": True})
-            # Attempt partial match (case-insensitive)
-            candidate = Task.query.filter(Task.name.ilike(f"%{task_name}%")).first()
-            if candidate:
-                name = candidate.name
-                db.session.delete(candidate)
-                db.session.commit()
-                return jsonify({"message": f"Deleted '{name}' successfully!", "continue_listening": True, "reload_page": True})
+                response_msg = f"Task saved: {task}"
             else:
-                # Suggest a few tasks
-                some = Task.query.limit(3).all()
-                if some:
-                    names = ", ".join(t.name for t in some)
-                    return jsonify({"message": f"Could not find '{task_name}'. You have: {names}", "continue_listening": True})
-                return jsonify({"message": "No tasks to delete.", "continue_listening": True})
+                response_msg = "Okay, discarded the task."
 
-        # COMPLETE command
-        if "complete" in tl or "finish" in tl or ("mark" in tl and "complete" in tl) or ("i'm done" in tl) or ("im done" in tl):
-            # try extract name after keyword
-            task_name = ""
-            for k in ("complete", "finish", "mark", "done"):
-                if k in tl:
-                    parts = tl.split(k, 1)
-                    if len(parts) > 1:
-                        task_name = parts[1].replace("task", "").strip()
-                        break
-            # If no explicit name, suggest incomplete tasks
-            if not task_name:
-                incompletes = Task.query.filter(Task.completed == False).limit(3).all()
-                if incompletes:
-                    names = ", ".join(t.name for t in incompletes)
-                    return jsonify({"message": f"Which task should I complete? You have: {names}", "continue_listening": True})
-                return jsonify({"message": "You have no incomplete tasks.", "continue_listening": True})
-            candidate = Task.query.filter(Task.name.ilike(f"%{task_name}%"), Task.completed == False).first()
-            if candidate:
-                candidate.completed = True
-                db.session.commit()
-                return jsonify({"message": f"Excellent! Task '{candidate.name}' marked complete.", "continue_listening": True, "reload_page": True})
-            else:
-                incompletes = Task.query.filter(Task.completed == False).limit(3).all()
-                if incompletes:
-                    names = ", ".join(t.name for t in incompletes)
-                    return jsonify({"message": f"Could not find '{task_name}'. You have: {names}", "continue_listening": True})
-                return jsonify({"message": "No incomplete tasks to complete.", "continue_listening": True})
+            # Reset flow
+            session["voice_flow"] = {"mode": None, "step": None, "task": {}}
+            continue_listening = False
 
-        # LIST / SHOW tasks
-        if "list" in tl or "show" in tl:
-            incompletes = Task.query.filter(Task.completed == False).all()
-            if not incompletes:
-                return jsonify({"message": "You have no tasks yet.", "continue_listening": True})
-            task_names = [t.name for t in incompletes[:3]]
-            message = f"You have {len(incompletes)} tasks: " + ", ".join(task_names)
-            if len(incompletes) > 3:
-                message += f" and {len(incompletes) - 3} more."
-            return jsonify({"message": message, "continue_listening": True})
-
-        # ADD / CREATE
-        if "add" in tl or "create" in tl:
-            token = "add" if "add" in tl else "create"
-            parts = tl.split(token, 1)
-            task_name = ""
-            if len(parts) > 1:
-                task_name = parts[1].replace("task", "").strip()
-            if not task_name:
-                return jsonify({"message": "What should I add? Say 'add buy milk'.", "continue_listening": True})
-            # Create the DB task immediately with minimal info,
-            # then start conversation to collect due_date/time/category
-            tname = normalize_task_name(task_name)
-            t = Task(name=tname, category="Other")
-            # Try to extract due_date and time from the same phrase (e.g., "add meeting tomorrow at 5 pm")
-            dd = parse_due_date_from_text(tl)
-            tt = parse_time_from_text(tl)
-            if dd:
-                t.due_date = dd
-            if tt:
-                t.task_time = tt
-            db.session.add(t)
+    # ---------------------
+    # Handle Delete
+    # ---------------------
+    elif mode == "delete":
+        candidate = Task.query.filter(Task.title.ilike(f"%{transcript}%")).first()
+        if candidate:
+            db.session.delete(candidate)
             db.session.commit()
-
-            # Decide next expected: if due_date missing -> ask due_date; else if time missing -> ask time; else ask category
-            if not t.due_date:
-                next_expected = "due_date"
-                prompt = "When is this due? Say 'today', 'tomorrow', a date, or 'skip'."
-            elif not t.task_time:
-                next_expected = "time"
-                prompt = "What time? Say a time like 'at 5 pm' or 'skip'."
-            else:
-                next_expected = "category"
-                prompt = "What category? Say Work, Personal, Study, Health, or Other."
-            session[SESSION_CONV_KEY] = {"next_expected": next_expected, "pending_task_id": t.id}
-            session.modified = True
-            return jsonify({"message": f"Adding '{t.name}'. {prompt}", "continue_listening": True})
-
-        # Skip / fallback when not recognized
-        return jsonify({"message": f"I heard: '{transcript}'. Try: 'add [task]', 'delete [task]', 'complete [task]', 'list tasks', or 'stop'.", "continue_listening": True})
-
-    except Exception as e:
-        # Log error to console for debugging (preserve original debug style)
-        print(f"[ERROR] Voice command exception: {e}")
-        return jsonify({"message": "Sorry, I encountered an error. Please try again.", "continue_listening": True}), 500
-
-
-# -------------------------
-# Legacy compatibility route (kept)
-# -------------------------
-@app.route('/voice/delete-task', methods=['POST'])
-def voice_delete_task_legacy():
-    """
-    Legacy delete endpoint (kept for compatibility with older clients).
-    Expects JSON {task_identifier: <id|name>}.
-    """
-    try:
-        data = request.get_json() or {}
-        task_identifier = data.get('task_identifier') or data.get('task_name')
-        if not task_identifier:
-            return jsonify({'message': "No task specified to delete", 'reload_page': False, 'continue_listening': True}), 400
-        deleted_task = None
-        if str(task_identifier).isdigit():
-            tid = int(task_identifier)
-            t = Task.query.get(tid)
-            if t:
-                deleted_task = t
-                db.session.delete(t)
-                db.session.commit()
-                return jsonify({'message': f"Task {tid} deleted", 'reload_page': True, 'continue_listening': True})
-            return jsonify({'message': f"Task {tid} not found", 'reload_page': False, 'continue_listening': True}), 404
+            response_msg = f"Deleted task '{candidate.title}' successfully!"
         else:
-            # delete by name partial match
-            t = Task.query.filter(Task.name.ilike(f"%{task_identifier}%")).first()
-            if t:
-                db.session.delete(t)
-                db.session.commit()
-                return jsonify({'message': f"Deleted '{t.name}'", 'reload_page': True, 'continue_listening': True})
-            return jsonify({'message': f"Task '{task_identifier}' not found", 'reload_page': False, 'continue_listening': True}), 404
-    except Exception as e:
-        print(f"[ERROR] legacy delete: {e}")
-        return jsonify({'message': f"Error deleting task: {str(e)}", 'reload_page': False, 'continue_listening': True}), 500
+            response_msg = f"No task found matching '{transcript}'."
+        session["voice_flow"] = {"mode": None, "step": None, "task": {}}
+        continue_listening = False
+
+    # ---------------------
+    # Handle Complete
+    # ---------------------
+    elif mode == "complete":
+        candidate = Task.query.filter(Task.title.ilike(f"%{transcript}%"), Task.completed==False).first()
+        if candidate:
+            candidate.completed = True
+            db.session.commit()
+            response_msg = f"Marked task '{candidate.title}' as complete!"
+        else:
+            response_msg = f"No incomplete task found matching '{transcript}'."
+        session["voice_flow"] = {"mode": None, "step": None, "task": {}}
+        continue_listening = False
+
+    # ---------------------
+    # New Command
+    # ---------------------
+    else:
+        if "add" in transcript:
+            flow["mode"] = "add"
+            flow["step"] = "title"
+            response_msg = "What task do you want to add?"
+
+        elif "delete" in transcript:
+            flow["mode"] = "delete"
+            flow["step"] = "task"
+            response_msg = "Which task do you want to delete?"
+
+        elif "complete" in transcript:
+            flow["mode"] = "complete"
+            flow["step"] = "task"
+            response_msg = "Which task do you want to mark complete?"
+
+        elif "list" in transcript:
+            tasks = Task.query.all()
+            if not tasks:
+                response_msg = "You have no tasks."
+            else:
+                task_list = []
+                for t in tasks:
+                    status = "✓" if t.completed else "✗"
+                    task_list.append(f"{t.title} [{status}]")
+                response_msg = "Your tasks: " + ", ".join(task_list)
+            continue_listening = False
+
+        else:
+            response_msg = f"Sorry, I didn’t understand: '{transcript}'"
+            continue_listening = False
+
+    # Save session
+    session["voice_flow"] = flow
+
+    return jsonify({
+        "continue_listening": continue_listening,
+        "message": response_msg
+    })
 
 # -------------------------
 # OpenAI Assistant skeleton (preserved but safe)

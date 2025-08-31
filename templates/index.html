@@ -262,25 +262,64 @@
     <div id="voiceStatus" class="mt-2 text-muted">Click Start Voice to begin</div>
 </div>
 
-<!-- Consolidated voice JS: fixed duplicates and ensured flow -->
+<!--Voice Command-->
 <script>
 let isListening = false;
 let recognition = null;
+let csrfToken = null;
 
+// ----------------------
+// Load CSRF token once
+// ----------------------
+fetch("/csrf-token")
+  .then(res => res.json())
+  .then(data => {
+      csrfToken = data.csrf_token;
+      console.log("CSRF loaded:", csrfToken);
+  });
+
+// ----------------------
+// Speak text using Web Speech API
+// ----------------------
+function speakText(text, callback=null) {
+    if (!('speechSynthesis' in window)) {
+        if (callback) callback();
+        return;
+    }
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'en-US';
+    utter.onend = () => {
+        if (callback) callback(); // call callback after speaking
+    };
+    window.speechSynthesis.speak(utter);
+}
+
+// ----------------------
+// Start voice control
+// ----------------------
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         document.getElementById('voiceStatus').textContent = 'Speech not supported. Use Chrome.';
         return;
     }
 
-    if (isListening) return; 
+    if (!csrfToken) {
+        document.getElementById('voiceStatus').textContent = 'CSRF token not ready. Try again in 1 sec';
+        setTimeout(startVoiceControl, 1000);
+        return;
+    }
+
+    if (isListening) return;
     isListening = true;
     document.getElementById('voiceBtn').classList.add('listening');
     document.getElementById('stopBtn').style.display = 'inline-block';
-    
+
     startListening();
 }
 
+// ----------------------
+// Listen & send transcript
+// ----------------------
 function startListening() {
     if (!isListening) return;
 
@@ -305,6 +344,66 @@ function startListening() {
 
         recognition.stop();
         document.getElementById('voiceStatus').textContent = `Processing: "${transcript}"`;
+
+        // ----------------------
+        // Send transcript to backend
+        // ----------------------
+        fetch("/voice/command", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": csrfToken
+            },
+            body: JSON.stringify({ transcript })
+        })
+        .then(res => res.json())
+        .then(data => {
+            // Speak the server's message
+            speakText(data.message, () => {
+                document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
+
+                // Auto-restart if backend asks to continue
+                if (data.continue_listening) {
+                    setTimeout(() => startListening(), 300);
+                } else {
+                    isListening = false;
+                    document.getElementById('voiceBtn').classList.remove('listening');
+                    document.getElementById('stopBtn').style.display = 'none';
+                }
+            });
+        })
+        .catch(err => {
+            console.error("Fetch error:", err);
+            document.getElementById('voiceStatus').textContent = "❌ Error sending command";
+            isListening = false;
+            document.getElementById('voiceBtn').classList.remove('listening');
+            document.getElementById('stopBtn').style.display = 'none';
+        });
+    };
+
+    recognition.onerror = (event) => {
+        console.error("Speech recognition error:", event.error);
+        document.getElementById('voiceStatus').textContent = "❌ Voice error: " + event.error;
+        isListening = false;
+        document.getElementById('voiceBtn').classList.remove('listening');
+        document.getElementById('stopBtn').style.display = 'none';
+    };
+
+    recognition.start();
+}
+
+// ----------------------
+// Stop voice control
+// ----------------------
+function stopVoiceControl() {
+    if (!isListening) return;
+    isListening = false;
+    if (recognition) recognition.stop();
+    document.getElementById('voiceBtn').classList.remove('listening');
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('voiceStatus').textContent = 'Voice control stopped.';
+}
+
 
         // ✅ FIXED fetch URL
         fetch("/voice/command", {
@@ -345,7 +444,6 @@ function startListening() {
             console.error('Command error:', error);
             setTimeout(() => { if (isListening) startListening(); }, 500);
         });
-    };
 
     recognition.onend = () => {
         if (isListening && !speechSynthesis.speaking) {
@@ -363,7 +461,6 @@ function startListening() {
     } catch (err) {
       console.warn('recognition.start error', err);
     }
-}
 
 function stopVoiceControl() {
     isListening = false;
