@@ -45,16 +45,17 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # CSRF protection for forms
+from flask_wtf.csrf import CSRFProtect
+
 csrf = CSRFProtect(app)
 
-@app.route("/get-csrf-token", methods=["GET"])
+
+from flask import jsonify
+from flask_wtf.csrf import generate_csrf
+
+@app.route("/csrf-token", methods=["GET"])
 def get_csrf_token():
-    """
-    Endpoint to fetch CSRF token for frontend/clients.
-    """
-    from flask_wtf.csrf import generate_csrf
     token = generate_csrf()
-    session["csrf_token"] = token
     return jsonify({"csrf_token": token})
 
 # DB init
@@ -471,17 +472,6 @@ def parse_request_json(req):
 # -------------------------
 # Voice Command Endpoint (with due_date, category, and time support)
 # -------------------------
-from flask import Flask, request, jsonify
-from flask_wtf.csrf import CSRFProtect
-
-app = Flask(__name__)
-app.config["SECRET_KEY"] = "arham0564"
-
-csrf = CSRFProtect(app)
-
-# 🚀 Exempt CSRF for API endpoint
-@csrf.exempt
-
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
     """
