@@ -469,9 +469,7 @@ def parse_request_json(req):
         data = {}
     return data
 
-# -------------------------
 # Voice Command Endpoint (with due_date, category, and time support)
-# -------------------------
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
     data = request.get_json(force=True, silent=True)
@@ -492,9 +490,8 @@ def voice_command():
     response_msg = ""
     continue_listening = True
 
-    # ---------------------
+
     # Handle Add Task
-    # ---------------------
     if mode == "add":
         if step == "title":
             task["title"] = transcript
@@ -534,9 +531,7 @@ def voice_command():
             session["voice_flow"] = {"mode": None, "step": None, "task": {}}
             continue_listening = False
 
-    # ---------------------
     # Handle Delete
-    # ---------------------
     elif mode == "delete":
         candidate = Task.query.filter(Task.title.ilike(f"%{transcript}%")).first()
         if candidate:
@@ -548,9 +543,7 @@ def voice_command():
         session["voice_flow"] = {"mode": None, "step": None, "task": {}}
         continue_listening = False
 
-    # ---------------------
     # Handle Complete
-    # ---------------------
     elif mode == "complete":
         candidate = Task.query.filter(Task.title.ilike(f"%{transcript}%"), Task.completed==False).first()
         if candidate:
@@ -562,9 +555,6 @@ def voice_command():
         session["voice_flow"] = {"mode": None, "step": None, "task": {}}
         continue_listening = False
 
-    # ---------------------
-    # New Command
-    # ---------------------
     else:
         if "add" in transcript:
             flow["mode"] = "add"
@@ -605,9 +595,8 @@ def voice_command():
         "message": response_msg
     })
 
-# -------------------------
-# OpenAI Assistant skeleton (preserved but safe)
-# -------------------------
+
+# OpenAI Assistant skeleton
 class AIAssistant:
     """
     Light wrapper for OpenAI ChatCompletion (kept as a skeleton).
