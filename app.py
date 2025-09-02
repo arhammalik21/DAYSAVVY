@@ -470,129 +470,334 @@ def parse_request_json(req):
     return data
 
 # Voice Command Endpoint (with due_date, category, and time support)
+# Voice Command Endpoint (due_date, time, category, confirm)
+from flask import request, jsonify, session
+
+YES_WORDS = {"yes","yeah","yep","yup","sure","confirm","save","please save","do it","okay save","ok save"}
+NO_WORDS  = {"no","nope","nah","cancel","discard","don’t save","dont save","do not save","stop"}
+
+def _get_flow():
+    return session.get("voice_flow") or {"mode": None, "step": None, "task": {}}
+
+def _save_flow(flow):
+    session["voice_flow"] = flow
+    session.modified = True
+
+def _clear_flow():
+    session.pop("voice_flow", None)
+    session.modified = True
+
+def _title_from_transcript(tl: str) -> str:
+    # strip common leading verbs/words when user says "add buy milk"
+    s = tl.strip()
+    for k in ("add ", "create ", "new task ", "task "):
+        if s.startswith(k):
+            s = s[len(k):]
+            break
+    return s.strip()
+
+#-- Voice Command --
+# --- Put these near the top of your file (if not already present) ---
+from flask import request, jsonify, session
+
+YES_WORDS = {"yes", "yeah", "yep", "yup", "sure", "confirm", "save", "please save", "do it", "okay", "ok"}
+NO_WORDS  = {"no", "nope", "nah", "cancel", "discard", "don't save", "dont save", "do not save", "stop"}
+
+def _get_flow():
+    return session.get("voice_flow", {"mode": None, "step": None, "task": {}})
+
+def _save_flow(flow):
+    session["voice_flow"] = flow
+    session.modified = True
+
+def _clear_flow():
+    if "voice_flow" in session:
+        session.pop("voice_flow", None)
+        session.modified = True
+
+def _title_from_transcript(tl: str) -> str:
+    s = tl.strip()
+    for prefix in ("add ", "create ", "new task ", "task "):
+        if s.startswith(prefix):
+            s = s[len(prefix):].strip()
+            break
+    return s
+
+# --- Replace your existing voice_command route with this one ---
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
-    data = request.get_json(force=True, silent=True)
-    if not data or "transcript" not in data:
-        return jsonify({"error": "Invalid request. 'transcript' missing"}), 400
+    data = request.get_json(force=True, silent=True) or {}
+    transcript = (data.get("transcript") or "").strip()
+    tl = transcript.lower().strip()
 
-    transcript = data["transcript"].strip().lower()
+    if not transcript:
+        return jsonify({
+            "message": "I didn't catch that. Say: add, delete, complete, or list.",
+            "continue_listening": True,
+            "task_added": False
+        })
 
-    # Initialize session state
-    if "voice_flow" not in session:
-        session["voice_flow"] = {"mode": None, "step": None, "task": {}}
+    # quick cancel / stop
+    if any(w in tl for w in ("stop", "cancel", "exit", "quit")):
+        _clear_flow()
+        return jsonify({
+            "message": "Voice flow cancelled.",
+            "continue_listening": False,
+            "task_added": False
+        })
 
-    flow = session["voice_flow"]
+    # load flow
+    flow = _get_flow()
     mode = flow["mode"]
     step = flow["step"]
     task = flow["task"]
 
-    response_msg = ""
-    continue_listening = True
-
-
-    # Handle Add Task
+    # ----------------- If currently in ADD flow -----------------
     if mode == "add":
+        # 1) title
         if step == "title":
-            task["title"] = transcript
+            title = _title_from_transcript(tl) or transcript
+            if not title:
+                return jsonify({
+                    "message": "Say the task title, like 'buy milk'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            task["title"] = title
             flow["step"] = "due"
-            response_msg = f"Adding '{task['title']}'. When is this due? Say 'today', 'tomorrow', a date, or 'skip'."
+            _save_flow(flow)
+            return jsonify({
+                "message": f"Adding '{title}'. When is it due? Say 'today', 'tomorrow', a date, or 'skip'.",
+                "continue_listening": True,
+                "task_added": False
+            })
 
-        elif step == "due":
-            task["due"] = transcript
+        # 2) due
+        if step == "due":
+            task["due"] = None if "skip" in tl else transcript
             flow["step"] = "time"
-            response_msg = "Got it. What time is this due? Say 'skip' if none."
+            _save_flow(flow)
+            return jsonify({
+                "message": "What time? Say a time like 'at 5 pm' or say 'skip'.",
+                "continue_listening": True,
+                "task_added": False
+            })
 
-        elif step == "time":
-            task["time"] = transcript
+        # 3) time
+        if step == "time":
+            task["time"] = None if "skip" in tl else transcript
             flow["step"] = "category"
-            response_msg = "Great. Do you want to add a category? Say one or 'skip'."
+            _save_flow(flow)
+            return jsonify({
+                "message": "Which category? Say Work, Personal, Study, Health, or say 'skip'.",
+                "continue_listening": True,
+                "task_added": False
+            })
 
-        elif step == "category":
-            task["category"] = transcript
+        # 4) category
+        if step == "category":
+            if "skip" in tl:
+                cat = "Other"
+            elif "work" in tl:
+                cat = "Work"
+            elif "personal" in tl:
+                cat = "Personal"
+            elif "study" in tl or "education" in tl:
+                cat = "Study"
+            elif "health" in tl or "fitness" in tl:
+                cat = "Health"
+            else:
+                cat = transcript.strip().title() or "Other"
+            task["category"] = cat
             flow["step"] = "confirm"
-            response_msg = f"Here’s what I got: {task}. Should I save this task? Say 'yes' or 'no'."
+            _save_flow(flow)
+            return jsonify({
+                "message": (
+                    f"Confirm: '{task['title']}' "
+                    f"(Due: {task.get('due') or 'none'}, "
+                    f"Time: {task.get('time') or 'none'}, "
+                    f"Category: {task.get('category')}). Should I save? Say 'yes' or 'no'."
+                ),
+                "continue_listening": True,
+                "task_added": False
+            })
 
-        elif step == "confirm":
-            if transcript in ["yes", "yeah", "yup"]:
+        # 5) confirm
+        if step == "confirm":
+            # YES path: create `new_task` only here (avoids UnboundLocalError)
+            if any(w in tl for w in YES_WORDS):
+                title_to_save = task.get("title", "").strip()
+                # try to use normalize_task_name if available, else fallback
+                try:
+                    saved_title = normalize_task_name(title_to_save)
+                except Exception:
+                    saved_title = title_to_save.title()
                 new_task = Task(
-                    title=normalize_task_name(task["title"]),
+                    name=task.get["task"],
                     due=task.get("due"),
                     time=task.get("time"),
                     category=task.get("category", "Other")
                 )
                 db.session.add(new_task)
                 db.session.commit()
-                response_msg = f"Task saved: {task}"
-            else:
-                response_msg = "Okay, discarded the task."
+                new_task_data = {
+                    "id": new_task.id,
+                    "title": new_task.title,
+                    "due": new_task.due,
+                    "time": new_task.time,
+                    "category": new_task.category,
+                    "completed": new_task.completed,
+                }
+                _clear_flow()
+                return jsonify({
+                    "message": f"Task '{new_task.title}' saved.",
+                    "continue_listening": False,
+                    "task_added": True,
+                    "reload_page": True,
+                    "new_task": new_task_data
+                })
 
-            # Reset flow
-            session["voice_flow"] = {"mode": None, "step": None, "task": {}}
-            continue_listening = False
+            # NO path
+            if any(w in tl for w in NO_WORDS):
+                _clear_flow()
+                return jsonify({
+                    "message": "Okay, discarded.",
+                    "continue_listening": False,
+                    "task_added": False
+                })
 
-    # Handle Delete
-    elif mode == "delete":
-        candidate = Task.query.filter(Task.title.ilike(f"%{transcript}%")).first()
-        if candidate:
-            db.session.delete(candidate)
-            db.session.commit()
-            response_msg = f"Deleted task '{candidate.title}' successfully!"
+            # Neither: retry once, then give up
+            retries = task.get("_retries", 0) + 1
+            task["_retries"] = retries
+            flow["task"] = task
+            _save_flow(flow)
+
+            if retries >= 2:
+                _clear_flow()
+                return jsonify({
+                    "message": "Didn't get a clear yes or no. Discarding the task.",
+                    "continue_listening": False,
+                    "task_added": False
+                })
+
+            return jsonify({
+                "message": "Please say 'yes' to save or 'no' to discard.",
+                "continue_listening": True,
+                "task_added": False
+            })
+
+    # ----------------- If not in add-flow, handle single-shot commands -----------------
+    # DELETE / REMOVE
+    if "delete" in tl or "remove" in tl:
+        part = "delete" if "delete" in tl else "remove"
+        name = tl.split(part, 1)[1].strip() if part in tl else ""
+        if not name:
+            return jsonify({
+                "message": "Which task should I delete?",
+                "continue_listening": True,
+                "task_added": False
+            })
+        candidate = Task.query.filter(Task.title.ilike(f"%{name}%")).first()
+        if not candidate:
+            return jsonify({
+                "message": f"I couldn't find '{name}'.",
+                "continue_listening": True,
+                "task_added": False
+            })
+        title = candidate.title
+        db.session.delete(candidate)
+        db.session.commit()
+        _clear_flow()
+        return jsonify({
+            "message": f"Deleted '{title}'.",
+            "continue_listening": False,
+            "task_added": False,
+            "reload_page": True
+        })
+
+    # COMPLETE
+    if "complete" in tl or "finish" in tl or "done" in tl:
+        name = ""
+        for k in ("complete", "finish", "done"):
+            if k in tl:
+                parts = tl.split(k, 1)
+                if len(parts) > 1:
+                    name = parts[1].strip()
+                break
+        if not name:
+            incompletes = Task.query.filter(Task.completed == False).limit(3).all()
+            if not incompletes:
+                return jsonify({
+                    "message": "You have no incomplete tasks.",
+                    "continue_listening": False,
+                    "task_added": False
+                })
+            names = ", ".join(t.title for t in incompletes)
+            return jsonify({
+                "message": f"Which task should I complete? You have: {names}.",
+                "continue_listening": True,
+                "task_added": False
+            })
+
+        cand = Task.query.filter(Task.title.ilike(f"%{name}%"), Task.completed == False).first()
+        if not cand:
+            return jsonify({
+                "message": f"I couldn't find '{name}'.",
+                "continue_listening": True,
+                "task_added": False
+            })
+        cand.completed = True
+        db.session.commit()
+        _clear_flow()
+        return jsonify({
+            "message": f"Marked '{cand.title}' complete.",
+            "continue_listening": False,
+            "task_added": False,
+            "reload_page": True
+        })
+
+    # LIST
+    if "list" in tl or "show" in tl:
+        tasks = Task.query.order_by(Task.completed.asc(), Task.id.desc()).all()
+        if not tasks:
+            return jsonify({
+                "message": "You have no tasks.",
+                "continue_listening": False,
+                "task_added": False
+            })
+        preview = ", ".join(f"{t.title} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
+        more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
+        return jsonify({
+            "message": f"You have {len(tasks)} tasks: {preview}{more}",
+            "continue_listening": False,
+            "task_added": False
+        })
+
+    # START ADD FLOW
+    if "add" in tl or "create" in tl or "new task" in tl:
+        title = _title_from_transcript(tl)
+        if title:
+            flow = {"mode": "add", "step": "due", "task": {"title": title}}
+            _save_flow(flow)
+            return jsonify({
+                "message": f"Adding '{title}'. When is it due? Say 'today', 'tomorrow', a date, or 'skip'.",
+                "continue_listening": True,
+                "task_added": False
+            })
         else:
-            response_msg = f"No task found matching '{transcript}'."
-        session["voice_flow"] = {"mode": None, "step": None, "task": {}}
-        continue_listening = False
+            flow = {"mode": "add", "step": "title", "task": {}}
+            _save_flow(flow)
+            return jsonify({
+                "message": "Sure. What task do you want to add?",
+                "continue_listening": True,
+                "task_added": False
+            })
 
-    # Handle Complete
-    elif mode == "complete":
-        candidate = Task.query.filter(Task.title.ilike(f"%{transcript}%"), Task.completed==False).first()
-        if candidate:
-            candidate.completed = True
-            db.session.commit()
-            response_msg = f"Marked task '{candidate.title}' as complete!"
-        else:
-            response_msg = f"No incomplete task found matching '{transcript}'."
-        session["voice_flow"] = {"mode": None, "step": None, "task": {}}
-        continue_listening = False
-
-    else:
-        if "add" in transcript:
-            flow["mode"] = "add"
-            flow["step"] = "title"
-            response_msg = "What task do you want to add?"
-
-        elif "delete" in transcript:
-            flow["mode"] = "delete"
-            flow["step"] = "task"
-            response_msg = "Which task do you want to delete?"
-
-        elif "complete" in transcript:
-            flow["mode"] = "complete"
-            flow["step"] = "task"
-            response_msg = "Which task do you want to mark complete?"
-
-        elif "list" in transcript:
-            tasks = Task.query.all()
-            if not tasks:
-                response_msg = "You have no tasks."
-            else:
-                task_list = []
-                for t in tasks:
-                    status = "✓" if t.completed else "✗"
-                    task_list.append(f"{t.title} [{status}]")
-                response_msg = "Your tasks: " + ", ".join(task_list)
-            continue_listening = False
-
-        else:
-            response_msg = f"Sorry, I didn’t understand: '{transcript}'"
-            continue_listening = False
-
-    # Save session
-    session["voice_flow"] = flow
-
+    # FALLBACK
     return jsonify({
-        "continue_listening": continue_listening,
-        "message": response_msg
+        "message": "Try: 'add buy milk', 'delete <task>', 'complete <task>', or 'list tasks'.",
+        "continue_listening": True,
+        "task_added": False
     })
 
 

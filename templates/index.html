@@ -262,7 +262,7 @@
     <div id="voiceStatus" class="mt-2 text-muted">Click Start Voice to begin</div>
 </div>
 
-<!--Voice Command-->
+<!-- Voice Command -->
 <script>
 let isListening = false;
 let recognition = null;
@@ -288,9 +288,12 @@ function speakText(text, callback=null) {
     }
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'en-US';
+    utter.rate = 1;   // natural flow
+    utter.pitch = 1;  // human-like
     utter.onend = () => {
-        if (callback) callback(); // call callback after speaking
+        if (callback) callback();
     };
+    window.speechSynthesis.cancel(); // prevent overlapping voices
     window.speechSynthesis.speak(utter);
 }
 
@@ -299,12 +302,12 @@ function speakText(text, callback=null) {
 // ----------------------
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-        document.getElementById('voiceStatus').textContent = 'Speech not supported. Use Chrome.';
+        document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
         return;
     }
 
     if (!csrfToken) {
-        document.getElementById('voiceStatus').textContent = 'CSRF token not ready. Try again in 1 sec';
+        document.getElementById('voiceStatus').textContent = '⚠️ CSRF token not ready. Retrying...';
         setTimeout(startVoiceControl, 1000);
         return;
     }
@@ -314,36 +317,41 @@ function startVoiceControl() {
     document.getElementById('voiceBtn').classList.add('listening');
     document.getElementById('stopBtn').style.display = 'inline-block';
 
-    startListening();
+    listenOnce(); // start first round
 }
 
 // ----------------------
-// Listen & send transcript
+// Stop voice control
 // ----------------------
-function startListening() {
+function stopVoiceControl() {
+    isListening = false;
+    if (recognition) recognition.stop();
+    document.getElementById('voiceBtn').classList.remove('listening');
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('voiceStatus').textContent = '🛑 Voice stopped';
+}
+
+// ----------------------
+// Listen for a single phrase
+// ----------------------
+function listenOnce() {
     if (!isListening) return;
 
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = true;
+    recognition.interimResults = false; // only capture final result
     recognition.lang = 'en-US';
 
     recognition.onstart = () => {
-        document.getElementById('voiceStatus').textContent = 'Listening...';
+        document.getElementById('voiceStatus').textContent = '🎤 Listening...';
     };
 
     recognition.onresult = (event) => {
-        const lastResult = event.results[event.results.length - 1];
-        const transcript = lastResult[0].transcript.trim();
-
-        if (!lastResult.isFinal) {
-            document.getElementById('voiceStatus').textContent = `Hearing: "${transcript}"`;
-            return;
-        }
+        const transcript = event.results[0][0].transcript.trim();
+        document.getElementById('voiceStatus').textContent = `⏳ Processing: "${transcript}"`;
 
         recognition.stop();
-        document.getElementById('voiceStatus').textContent = `Processing: "${transcript}"`;
 
         // ----------------------
         // Send transcript to backend
@@ -358,38 +366,59 @@ function startListening() {
         })
         .then(res => res.json())
         .then(data => {
-            // Speak the server's message
-            speakText(data.message, () => {
+            console.log("Backend response:", data);
+
+            speakText(data.message || "I didn’t catch that.", () => {
                 document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
 
-                // Auto-restart if backend asks to continue
-                if (data.continue_listening) {
-                    setTimeout(() => startListening(), 300);
+                // ✅ Refresh tasks when backend confirms
+                if (data.task_added && typeof refreshTaskList === "function") {
+                    refreshTaskList();
+                }
+
+                // ✅ Continue conversation if backend says so
+                if (data.continue_listening && isListening) {
+                    setTimeout(() => listenOnce(), 600);
                 } else {
-                    isListening = false;
-                    document.getElementById('voiceBtn').classList.remove('listening');
-                    document.getElementById('stopBtn').style.display = 'none';
+                    stopVoiceControl();
                 }
             });
         })
         .catch(err => {
             console.error("Fetch error:", err);
             document.getElementById('voiceStatus').textContent = "❌ Error sending command";
-            isListening = false;
-            document.getElementById('voiceBtn').classList.remove('listening');
-            document.getElementById('stopBtn').style.display = 'none';
+            stopVoiceControl();
         });
     };
 
     recognition.onerror = (event) => {
         console.error("Speech recognition error:", event.error);
         document.getElementById('voiceStatus').textContent = "❌ Voice error: " + event.error;
-        isListening = false;
-        document.getElementById('voiceBtn').classList.remove('listening');
-        document.getElementById('stopBtn').style.display = 'none';
+
+        if (event.error === "no-speech" && isListening) {
+            setTimeout(() => listenOnce(), 600); // retry softly
+        } else {
+            stopVoiceControl();
+        }
+    };
+
+    recognition.onend = () => {
+        // Do nothing — we explicitly restart inside .onresult when needed
     };
 
     recognition.start();
+}
+
+
+// ----------------------
+// STOP listening button
+// ----------------------
+function stopVoiceControl() {
+    if (recognition) recognition.stop();
+    isListening = false;
+    document.getElementById('voiceBtn').classList.remove('listening');
+    document.getElementById('stopBtn').style.display = 'none';
+    document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
 }
 
 // ----------------------
