@@ -1,14 +1,16 @@
 # DAYSAVVY
 
-DAYSAVVY is a simple and intuitive To-Do List web application built with Python and Flask.  
-It helps users organize their tasks by allowing easy adding and deleting of tasks in a clean interface.
+DAYSAVVY is a simple and intuitive To-Do List web application with AI voice command that can add all the functions with voice only and all these built with Python and Flask.  
+It helps users organize their tasks by allowing easy adding , manging , editing and deleting of tasks in a clean interface.
 
 ## Features
-Add new tasks quickly: Enter tasks in a responsive input box, just hit ‘Add’!
+Add new tasks quickly: Enter tasks in a responsive input box, just hit ‘Add’! or say it through AI VOICE.
 
-Delete tasks effortlessly: Remove any task with a single click using the red “Delete” button.
+Delete tasks effortlessly: Remove any task with a single click using the red “Delete” button or just say "DELETE that particular task" through AI VOICE.
 
 Mark tasks as completed: Click “Complete” to instantly move a task to the completed section.
+
+Edit tasks : Click "Edit" to update or edit any particular task.
 
 Clear visual separation: See your Incomplete and Completed Tasks organized into separate lists with headings.
 
@@ -27,6 +29,12 @@ Accessible interface: Easy-to-use buttons, readable font, and high-contrast colo
 - Python  
 - Flask web framework  
 - HTML & Jinja2 templating  
+
+## Screenshots
+
+![Homepage](Images/home.png)
+![Generated URL](Images/url.png)
+
 
 ## How to Run Locally
 
