@@ -32,8 +32,7 @@ Accessible interface: Easy-to-use buttons, readable font, and high-contrast colo
 
 ## Screenshots
 
-![Homepage](Images/home.png)
-![Generated URL](Images/url.png)
+![Homepage](Images/Home.png)
 
 
 ## How to Run Locally
