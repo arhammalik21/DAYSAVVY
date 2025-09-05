@@ -1,6 +1,4 @@
-# -------------------------
 # Imports
-# -------------------------
 import os
 import re
 import io
@@ -66,7 +64,6 @@ migrate = Migrate(app, db)
 with app.app_context():
     db.create_all()
 
-# -------------------------
 # Constants & Globals
 # -------------------------
 # STOP words & auto-stop phrases for voice control
@@ -79,9 +76,8 @@ AUTO_STOP_PHRASES = {
 # session key for conversation FSM
 SESSION_CONV_KEY = 'conversation_state'
 
-# -------------------------
+
 # Models
-# -------------------------
 class Task(db.Model):
     """
     Persistent Task model.
@@ -106,9 +102,7 @@ class Task(db.Model):
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
 
-# -------------------------
 # Forms
-# -------------------------
 class TaskForm(FlaskForm):
     """WTForms form used in the web UI to add/update tasks."""
     task = StringField('Task', validators=[DataRequired()])
@@ -119,9 +113,7 @@ class TaskForm(FlaskForm):
     ])
     submit = SubmitField('Add Task')
 
-# -------------------------
 # Helper utilities
-# -------------------------
 def task_to_dict(t: Task) -> Dict[str, Any]:
     """Serialize Task model to JSON-serializable dict for APIs and voice responses."""
     return {
@@ -264,9 +256,7 @@ def speak_text_nonblocking(text: str):
 
     threading.Thread(target=_play, daemon=True).start()
 
-# -------------------------
 # Web UI Routes (Flask)
-# -------------------------
 @app.after_request
 def add_no_cache_headers(response):
     """
@@ -301,7 +291,7 @@ def index():
         # Redirect to avoid duplicate POST on refresh
         return redirect(url_for("index"))
 
-    # Query parameters for search/status filters (kept from original)
+    # Query parameters for search/status filters
     q = request.args.get("q", "").strip()
     status = request.args.get("status", "").strip()
 
@@ -319,7 +309,7 @@ def index():
     incomplete_tasks = [t for t in tasks_filtered if not t.completed]
     completed_tasks = [t for t in tasks_filtered if t.completed]
 
-    # Debug console prints (preserved)
+    # Debug console prints
     print(f"DEBUG: Total tasks: {len(tasks_filtered)}; incomplete: {len(incomplete_tasks)}; completed: {len(completed_tasks)}")
     for t in tasks_filtered:
         print(f"  Task {t.id}: {t.name} | completed={t.completed} | due={t.due_date} time={t.task_time} category={t.category}")
@@ -339,6 +329,7 @@ def edit_task(task_id):
     task = Task.query.get_or_404(task_id)
     form = TaskForm()
     if request.method == "POST" and form.validate_on_submit():
+        title = db.Column(db.String(100), nullable=True)  # instead of nullable=False
         task.name = normalize_task_name(form.task.data)
         task.due_date = form.due_date.data
         task.task_time = form.task_time.data
@@ -448,7 +439,7 @@ def api_delete_task(task_id):
     db.session.commit()
     return jsonify({"message": "Task deleted"})
 
-# ---------------- Helper function to safely parse JSON ----------------
+# Helper function to safely parse JSON 
 def parse_request_json(req):
     """
     Safely parse JSON from the request.
@@ -469,39 +460,15 @@ def parse_request_json(req):
         data = {}
     return data
 
-# Voice Command Endpoint (with due_date, category, and time support)
-# Voice Command Endpoint (due_date, time, category, confirm)
+# Voice Command 
+# --- Voice flow helpers and parsers (paste into app.py) ---
 from flask import request, jsonify, session
+from datetime import datetime, date, time, timedelta
+import re
 
-YES_WORDS = {"yes","yeah","yep","yup","sure","confirm","save","please save","do it","okay save","ok save"}
-NO_WORDS  = {"no","nope","nah","cancel","discard","don’t save","dont save","do not save","stop"}
-
-def _get_flow():
-    return session.get("voice_flow") or {"mode": None, "step": None, "task": {}}
-
-def _save_flow(flow):
-    session["voice_flow"] = flow
-    session.modified = True
-
-def _clear_flow():
-    session.pop("voice_flow", None)
-    session.modified = True
-
-def _title_from_transcript(tl: str) -> str:
-    # strip common leading verbs/words when user says "add buy milk"
-    s = tl.strip()
-    for k in ("add ", "create ", "new task ", "task "):
-        if s.startswith(k):
-            s = s[len(k):]
-            break
-    return s.strip()
-
-#-- Voice Command --
-# --- Put these near the top of your file (if not already present) ---
-from flask import request, jsonify, session
-
-YES_WORDS = {"yes", "yeah", "yep", "yup", "sure", "confirm", "save", "please save", "do it", "okay", "ok"}
-NO_WORDS  = {"no", "nope", "nah", "cancel", "discard", "don't save", "dont save", "do not save", "stop"}
+# Words used for yes/no checks
+YES_WORDS = {"yes", "yeah", "yup", "sure", "correct", "save", "affirmative"}
+NO_WORDS = {"no", "nah", "nope", "don't", "dont", "do not", "cancel"}
 
 def _get_flow():
     return session.get("voice_flow", {"mode": None, "step": None, "task": {}})
@@ -511,294 +478,439 @@ def _save_flow(flow):
     session.modified = True
 
 def _clear_flow():
-    if "voice_flow" in session:
-        session.pop("voice_flow", None)
-        session.modified = True
+    session.pop("voice_flow", None)
+    session.modified = True
 
-def _title_from_transcript(tl: str) -> str:
-    s = tl.strip()
-    for prefix in ("add ", "create ", "new task ", "task "):
-        if s.startswith(prefix):
-            s = s[len(prefix):].strip()
-            break
-    return s
+def _title_from_transcript(tl: str):
+    """
+    Try to extract a short task name from a spoken phrase like:
+    "add buy milk tomorrow at 5" -> returns "buy milk"
+    If nothing convincing found, return None.
+    """
+    tl = tl.strip()
+    # Find after "add" or "create" or "new task"
+    m = re.search(r'\b(?:add|create|new task|i want to add)\b\s*(.+)', tl)
+    if not m:
+        return None
+    candidate = m.group(1).strip()
 
-# --- Replace your existing voice_command route with this one ---
+    # Remove trailing date/time phrases
+    candidate = re.sub(r'\b(?:today|tomorrow|tonight|next\s+\w+|in\s+\d+\s+days|on\s+\w+\s*\d{1,2})\b.*$', '', candidate)
+    # Remove "at 5 pm" style
+    candidate = re.sub(r'\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b', '', candidate)
+    candidate = re.sub(r'\b\d{1,2}(:\d{2})\s*(am|pm)?\b', '', candidate)
+    candidate = candidate.strip(" ,.")
+    return candidate or None
+
+def parse_due_date(text: str):
+    """Return a datetime.date or None. Accepts 'today','tomorrow','in N days','next monday','YYYY-MM-DD','DD/MM/YYYY', 'Sep 5' etc."""
+    if not text:
+        return None
+    t = text.lower().strip()
+
+    today = date.today()
+    if "today" in t:
+        return today
+    if "tomorrow" in t:
+        return today + timedelta(days=1)
+
+    # in N days
+    m = re.search(r'in\s+(\d+)\s+days?', t)
+    if m:
+        return today + timedelta(days=int(m.group(1)))
+
+    # next <weekday>
+    days = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6
+    }
+    m = re.search(r'next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)', t)
+    if m:
+        target = days[m.group(1)]
+        days_ahead = (target - today.weekday() + 7) % 7
+        days_ahead = days_ahead if days_ahead != 0 else 7
+        return today + timedelta(days=days_ahead)
+
+    # Try explicit formats (with and without year)
+    formats = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%B %d %Y", "%b %d %Y", "%B %d", "%b %d"]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(t, fmt)
+            # if format didn't include year, strptime will fill current year for "%B %d" patterns -> handle:
+            if fmt in ("%B %d", "%b %d"):
+                return date(date.today().year, dt.month, dt.day)
+            return dt.date()
+        except Exception:
+            continue
+
+    # Last-ditch: search for something like "05/09" -> assume current year, or "5 september"
+    m = re.search(r'(\d{1,2})[\/\-\s](\d{1,2})(?:[\/\-\s](\d{2,4}))?', t)
+    if m:
+        d1 = int(m.group(1)); d2 = int(m.group(2)); y = m.group(3)
+        if y:
+            y = int(y)
+            if y < 100: y += 2000
+        else:
+            y = today.year
+        # guess order: if d1 > 12 treat as day first (d/m), else assume d/m
+        if d1 > 12:
+            try:
+                return date(y, d2, d1)
+            except Exception:
+                pass
+        else:
+            try:
+                return date(y, d1, d2)
+            except Exception:
+                pass
+
+    return None
+
+def parse_task_time(text: str):
+    """Return datetime.time or None. Accepts '5 pm', '17:30', '7:00 a.m.', 'noon'."""
+    if not text:
+        return None
+    t = text.lower().strip().replace(".", "")
+    if "noon" in t:
+        return time(12, 0)
+    if "midnight" in t:
+        return time(0, 0)
+
+    # Find hh:mm am/pm or hh am/pm or hh:mm (24h)
+    m = re.search(r'(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', t)
+    if not m:
+        return None
+    hour = int(m.group(1))
+    minute = int(m.group(2) or 0)
+    ampm = m.group(3)
+
+    if ampm:
+        ampm = ampm.lower()
+        if ampm == "pm" and hour != 12:
+            hour = hour + 12
+        if ampm == "am" and hour == 12:
+            hour = 0
+    else:
+        # no am/pm -> treat as 24h if reasonable
+        if hour <= 23:
+            pass
+        else:
+            # fallback: invalid hour
+            return None
+
+    try:
+        return time(hour % 24, minute)
+    except Exception:
+        return None
+
+def _fmt_date_for_user(d):
+    if d is None:
+        return "none"
+    if isinstance(d, date):
+        return d.strftime("%b %d")
+    return str(d)
+
+def _fmt_time_for_user(t):
+    if t is None:
+        return "none"
+    if isinstance(t, time):
+        return t.strftime("%-I:%M %p") if hasattr(t, 'strftime') else str(t)
+    return str(t)
+
+# --- voice_command route (drop-in replacement) ---
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
-    data = request.get_json(force=True, silent=True) or {}
-    transcript = (data.get("transcript") or "").strip()
-    tl = transcript.lower().strip()
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        transcript = (data.get("transcript") or "").strip()
+        tl = transcript.lower()
 
-    if not transcript:
+        # Basic guard
+        if not transcript:
+            return jsonify({
+                "message": "I didn’t catch that. Say: add, delete, complete, or list.",
+                "continue_listening": True,
+                "task_added": False
+            })
+
+        # Allow cancel at any time
+        if any(w in tl for w in ("stop", "cancel", "exit", "quit")):
+            _clear_flow()
+            return jsonify({
+                "message": "Voice flow cancelled.",
+                "continue_listening": False,
+                "task_added": False
+            })
+
+        flow = _get_flow()
+        mode = flow.get("mode")
+        step = flow.get("step")
+        task = flow.get("task") or {}
+
+        # ----------------- ADD FLOW -----------------
+        if mode == "add":
+            # 1) Title
+            if step == "title":
+                # allow the user to speak full title (fallback to raw transcript)
+                title_guess = _title_from_transcript(tl) or transcript
+                title = (title_guess or "").strip()
+                if not title:
+                    return jsonify({
+                        "message": "Say the task name, like 'buy milk'.",
+                        "continue_listening": True,
+                        "task_added": False
+                    })
+                task["name"] = title
+                flow["step"] = "due"
+                flow["task"] = task
+                _save_flow(flow)
+                return jsonify({
+                    "message": f"Adding '{title}'. When is it due? Say 'today', 'tomorrow', a date, 'in 2 days', or 'skip'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # 2) Due (save raw text here; parse only on save)
+            if step == "due":
+                task["due_text"] = None if "skip" in tl else transcript
+                flow["step"] = "time"
+                flow["task"] = task
+                _save_flow(flow)
+                return jsonify({
+                    "message": "What time? Say a time like 'at 5 pm' or say 'skip'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # 3) Time
+            if step == "time":
+                task["time_text"] = None if "skip" in tl else transcript
+                flow["step"] = "category"
+                flow["task"] = task
+                _save_flow(flow)
+                return jsonify({
+                    "message": "Which category? Work, Personal, Study, Health, or say 'skip'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # 4) Category
+            if step == "category":
+                if "skip" in tl:
+                    cat = "Other"
+                elif "work" in tl:
+                    cat = "Work"
+                elif "personal" in tl:
+                    cat = "Personal"
+                elif "study" in tl or "education" in tl:
+                    cat = "Study"
+                elif "health" in tl or "fitness" in tl:
+                    cat = "Health"
+                else:
+                    cat = transcript.strip().title() or "Other"
+                task["category"] = cat
+                flow["step"] = "confirm"
+                flow["task"] = task
+                _save_flow(flow)
+
+                # Preview parsed values for the user (if parsable)
+                parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
+                parsed_time = parse_task_time(task.get("time_text")) if task.get("time_text") else None
+
+                return jsonify({
+                    "message": (
+                        f"Confirm: '{task.get('name')}' "
+                        f"(Due: {_fmt_date_for_user(parsed_due)}, "
+                        f"Time: {_fmt_time_for_user(parsed_time)}, "
+                        f"Category: {task.get('category')}). Should I save? Say 'yes' or 'no'."
+                    ),
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # 5) Confirm
+            if step == "confirm":
+                # YES path
+                if any(w in tl for w in YES_WORDS):
+                    # parse stored text -> date/time objects
+                    parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
+                    parsed_time = parse_task_time(task.get("time_text")) if task.get("time_text") else None
+
+                    # create and save
+                    new_task = Task(
+                        name=task.get("name"),
+                        due_date=parsed_due,
+                        task_time=parsed_time,
+                        category=task.get("category", "Other")
+                    )
+                    db.session.add(new_task)
+                    db.session.commit()
+
+                    new_task_data = {
+                        "id": new_task.id,
+                        "name": new_task.name,
+                        "due_date": new_task.due_date.isoformat() if new_task.due_date else None,
+                        "task_time": new_task.task_time.strftime("%H:%M:%S") if new_task.task_time else None,
+                        "category": new_task.category,
+                        "completed": bool(new_task.completed),
+                    }
+
+                    _clear_flow()
+                    return jsonify({
+                        "message": f"Task '{new_task.name}' saved.",
+                        "continue_listening": False,
+                        "task_added": True,
+                        "reload_page": True,
+                        "new_task": new_task_data
+                    })
+
+                # NO path
+                if any(w in tl for w in NO_WORDS):
+                    _clear_flow()
+                    return jsonify({
+                        "message": "Okay, discarded.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+
+                # Neither yes nor no -> retry once, then discard
+                retries = int(task.get("_retries", 0)) + 1
+                task["_retries"] = retries
+                flow["task"] = task
+                _save_flow(flow)
+                if retries >= 2:
+                    _clear_flow()
+                    return jsonify({
+                        "message": "Didn’t get a clear yes or no. Discarding the task.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+                return jsonify({
+                    "message": "Please say 'yes' to save or 'no' to discard.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+        # ----------------- DELETE / REMOVE -----------------
+        if "delete" in tl or "remove" in tl:
+            keyword = "delete" if "delete" in tl else "remove"
+            name = tl.split(keyword, 1)[1].strip() if keyword in tl else ""
+            if not name:
+                return jsonify({
+                    "message": "Which task should I delete?",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            candidate = Task.query.filter(Task.name.ilike(f"%{name}%")).first()
+            if not candidate:
+                return jsonify({
+                    "message": f"I couldn’t find '{name}'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            title = candidate.name
+            db.session.delete(candidate)
+            db.session.commit()
+            _clear_flow()
+            return jsonify({
+                "message": f"Deleted '{title}'.",
+                "continue_listening": False,
+                "task_added": False,
+                "reload_page": True
+            })
+
+        # ----------------- COMPLETE -----------------
+        if "complete" in tl or "finish" in tl or "done" in tl:
+            name = ""
+            for k in ("complete", "finish", "done"):
+                if k in tl:
+                    parts = tl.split(k, 1)
+                    if len(parts) > 1:
+                        name = parts[1].strip()
+                    break
+            if not name:
+                incompletes = Task.query.filter(Task.completed == False).limit(3).all()
+                if not incompletes:
+                    return jsonify({
+                        "message": "You have no incomplete tasks.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+                names = ", ".join(t.name for t in incompletes)
+                return jsonify({
+                    "message": f"Which task should I complete? You have: {names}.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            cand = Task.query.filter(Task.name.ilike(f"%{name}%"), Task.completed == False).first()
+            if not cand:
+                return jsonify({
+                    "message": f"I couldn’t find '{name}'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            cand.completed = True
+            db.session.commit()
+            _clear_flow()
+            return jsonify({
+                "message": f"Marked '{cand.name}' complete.",
+                "continue_listening": False,
+                "task_added": False,
+                "reload_page": True
+            })
+
+        # ----------------- LIST -----------------
+        if "list" in tl or "show" in tl:
+            tasks = Task.query.order_by(Task.completed.asc(), Task.id.desc()).all()
+            if not tasks:
+                return jsonify({
+                    "message": "You have no tasks.",
+                    "continue_listening": False,
+                    "task_added": False
+                })
+            preview = ", ".join(f"{t.name} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
+            more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
+            return jsonify({
+                "message": f"You have {len(tasks)} tasks: {preview}{more}",
+                "continue_listening": False,
+                "task_added": False
+            })
+
+        # ----------------- START ADD FLOW (initial) -----------------
+        if "add" in tl or "create" in tl or "new task" in tl:
+            name = _title_from_transcript(tl)
+            if name:
+                flow = {"mode": "add", "step": "due", "task": {"name": name}}
+                _save_flow(flow)
+                return jsonify({
+                    "message": f"Adding '{name}'. When is it due? Say 'today', 'tomorrow', a date, or 'skip'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            else:
+                flow = {"mode": "add", "step": "title", "task": {}}
+                _save_flow(flow)
+                return jsonify({
+                    "message": "Sure. What task do you want to add?",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+        # FALLBACK
         return jsonify({
-            "message": "I didn't catch that. Say: add, delete, complete, or list.",
+            "message": "Try: 'add buy milk', 'delete <task>', 'complete <task>', or 'list tasks'.",
             "continue_listening": True,
             "task_added": False
         })
 
-    # quick cancel / stop
-    if any(w in tl for w in ("stop", "cancel", "exit", "quit")):
-        _clear_flow()
+    except Exception as e:
+        print("[VOICE ERROR]", e)
+        # keep friendly error message for front-end
         return jsonify({
-            "message": "Voice flow cancelled.",
+            "message": "Sorry — an error occurred processing that voice command.",
             "continue_listening": False,
             "task_added": False
-        })
-
-    # load flow
-    flow = _get_flow()
-    mode = flow["mode"]
-    step = flow["step"]
-    task = flow["task"]
-
-    # ----------------- If currently in ADD flow -----------------
-    if mode == "add":
-        # 1) title
-        if step == "title":
-            title = _title_from_transcript(tl) or transcript
-            if not title:
-                return jsonify({
-                    "message": "Say the task title, like 'buy milk'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            task["title"] = title
-            flow["step"] = "due"
-            _save_flow(flow)
-            return jsonify({
-                "message": f"Adding '{title}'. When is it due? Say 'today', 'tomorrow', a date, or 'skip'.",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-        # 2) due
-        if step == "due":
-            task["due"] = None if "skip" in tl else transcript
-            flow["step"] = "time"
-            _save_flow(flow)
-            return jsonify({
-                "message": "What time? Say a time like 'at 5 pm' or say 'skip'.",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-        # 3) time
-        if step == "time":
-            task["time"] = None if "skip" in tl else transcript
-            flow["step"] = "category"
-            _save_flow(flow)
-            return jsonify({
-                "message": "Which category? Say Work, Personal, Study, Health, or say 'skip'.",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-        # 4) category
-        if step == "category":
-            if "skip" in tl:
-                cat = "Other"
-            elif "work" in tl:
-                cat = "Work"
-            elif "personal" in tl:
-                cat = "Personal"
-            elif "study" in tl or "education" in tl:
-                cat = "Study"
-            elif "health" in tl or "fitness" in tl:
-                cat = "Health"
-            else:
-                cat = transcript.strip().title() or "Other"
-            task["category"] = cat
-            flow["step"] = "confirm"
-            _save_flow(flow)
-            return jsonify({
-                "message": (
-                    f"Confirm: '{task['title']}' "
-                    f"(Due: {task.get('due') or 'none'}, "
-                    f"Time: {task.get('time') or 'none'}, "
-                    f"Category: {task.get('category')}). Should I save? Say 'yes' or 'no'."
-                ),
-                "continue_listening": True,
-                "task_added": False
-            })
-
-        # 5) confirm
-        if step == "confirm":
-            # YES path: create `new_task` only here (avoids UnboundLocalError)
-            if any(w in tl for w in YES_WORDS):
-                title_to_save = task.get("title", "").strip()
-                # try to use normalize_task_name if available, else fallback
-                try:
-                    saved_title = normalize_task_name(title_to_save)
-                except Exception:
-                    saved_title = title_to_save.title()
-                new_task = Task(
-                    name=task.get["task"],
-                    due=task.get("due"),
-                    time=task.get("time"),
-                    category=task.get("category", "Other")
-                )
-                db.session.add(new_task)
-                db.session.commit()
-                new_task_data = {
-                    "id": new_task.id,
-                    "title": new_task.title,
-                    "due": new_task.due,
-                    "time": new_task.time,
-                    "category": new_task.category,
-                    "completed": new_task.completed,
-                }
-                _clear_flow()
-                return jsonify({
-                    "message": f"Task '{new_task.title}' saved.",
-                    "continue_listening": False,
-                    "task_added": True,
-                    "reload_page": True,
-                    "new_task": new_task_data
-                })
-
-            # NO path
-            if any(w in tl for w in NO_WORDS):
-                _clear_flow()
-                return jsonify({
-                    "message": "Okay, discarded.",
-                    "continue_listening": False,
-                    "task_added": False
-                })
-
-            # Neither: retry once, then give up
-            retries = task.get("_retries", 0) + 1
-            task["_retries"] = retries
-            flow["task"] = task
-            _save_flow(flow)
-
-            if retries >= 2:
-                _clear_flow()
-                return jsonify({
-                    "message": "Didn't get a clear yes or no. Discarding the task.",
-                    "continue_listening": False,
-                    "task_added": False
-                })
-
-            return jsonify({
-                "message": "Please say 'yes' to save or 'no' to discard.",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-    # ----------------- If not in add-flow, handle single-shot commands -----------------
-    # DELETE / REMOVE
-    if "delete" in tl or "remove" in tl:
-        part = "delete" if "delete" in tl else "remove"
-        name = tl.split(part, 1)[1].strip() if part in tl else ""
-        if not name:
-            return jsonify({
-                "message": "Which task should I delete?",
-                "continue_listening": True,
-                "task_added": False
-            })
-        candidate = Task.query.filter(Task.title.ilike(f"%{name}%")).first()
-        if not candidate:
-            return jsonify({
-                "message": f"I couldn't find '{name}'.",
-                "continue_listening": True,
-                "task_added": False
-            })
-        title = candidate.title
-        db.session.delete(candidate)
-        db.session.commit()
-        _clear_flow()
-        return jsonify({
-            "message": f"Deleted '{title}'.",
-            "continue_listening": False,
-            "task_added": False,
-            "reload_page": True
-        })
-
-    # COMPLETE
-    if "complete" in tl or "finish" in tl or "done" in tl:
-        name = ""
-        for k in ("complete", "finish", "done"):
-            if k in tl:
-                parts = tl.split(k, 1)
-                if len(parts) > 1:
-                    name = parts[1].strip()
-                break
-        if not name:
-            incompletes = Task.query.filter(Task.completed == False).limit(3).all()
-            if not incompletes:
-                return jsonify({
-                    "message": "You have no incomplete tasks.",
-                    "continue_listening": False,
-                    "task_added": False
-                })
-            names = ", ".join(t.title for t in incompletes)
-            return jsonify({
-                "message": f"Which task should I complete? You have: {names}.",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-        cand = Task.query.filter(Task.title.ilike(f"%{name}%"), Task.completed == False).first()
-        if not cand:
-            return jsonify({
-                "message": f"I couldn't find '{name}'.",
-                "continue_listening": True,
-                "task_added": False
-            })
-        cand.completed = True
-        db.session.commit()
-        _clear_flow()
-        return jsonify({
-            "message": f"Marked '{cand.title}' complete.",
-            "continue_listening": False,
-            "task_added": False,
-            "reload_page": True
-        })
-
-    # LIST
-    if "list" in tl or "show" in tl:
-        tasks = Task.query.order_by(Task.completed.asc(), Task.id.desc()).all()
-        if not tasks:
-            return jsonify({
-                "message": "You have no tasks.",
-                "continue_listening": False,
-                "task_added": False
-            })
-        preview = ", ".join(f"{t.title} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
-        more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
-        return jsonify({
-            "message": f"You have {len(tasks)} tasks: {preview}{more}",
-            "continue_listening": False,
-            "task_added": False
-        })
-
-    # START ADD FLOW
-    if "add" in tl or "create" in tl or "new task" in tl:
-        title = _title_from_transcript(tl)
-        if title:
-            flow = {"mode": "add", "step": "due", "task": {"title": title}}
-            _save_flow(flow)
-            return jsonify({
-                "message": f"Adding '{title}'. When is it due? Say 'today', 'tomorrow', a date, or 'skip'.",
-                "continue_listening": True,
-                "task_added": False
-            })
-        else:
-            flow = {"mode": "add", "step": "title", "task": {}}
-            _save_flow(flow)
-            return jsonify({
-                "message": "Sure. What task do you want to add?",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-    # FALLBACK
-    return jsonify({
-        "message": "Try: 'add buy milk', 'delete <task>', 'complete <task>', or 'list tasks'.",
-        "continue_listening": True,
-        "task_added": False
-    })
+        }), 500
 
 
 # OpenAI Assistant skeleton
@@ -853,9 +965,7 @@ class AIAssistant:
 
 ai_assistant = AIAssistant()
 
-# -------------------------
 # Favicon / Static helper
-# -------------------------
 @app.route('/favicon.ico')
 def favicon():
     """
@@ -865,9 +975,7 @@ def favicon():
     fp = os.path.join(app.root_path, 'static', 'favicon_ico')
     return send_from_directory(fp, 'favicon-32x32.png', mimetype='image/png')
 
-# -------------------------
 # Run server
-# -------------------------
 if __name__ == "__main__":
     print("🚀 DaySavvy consolidated app starting up...")
     print("Voice commands available at: POST /voice/command (JSON: {'transcript': '...'})")
