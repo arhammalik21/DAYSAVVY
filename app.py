@@ -819,7 +819,7 @@ def voice_command():
                 "reload_page": True
             })
 
-        # ----------------- COMPLETE -----------------
+        # COMPLETE
         if "complete" in tl or "finish" in tl or "done" in tl:
             name = ""
             for k in ("complete", "finish", "done"):
