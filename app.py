@@ -19,7 +19,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_cors import CORS
 
-# Optional libs (may not be available in your environment)
+# Optional libs 
 try:
     import openai
 except Exception:
@@ -64,9 +64,7 @@ migrate = Migrate(app, db)
 with app.app_context():
     db.create_all()
 
-# Constants & Globals
-# -------------------------
-# STOP words & auto-stop phrases for voice control
+# Voice Command Constants & Globals
 STOP_WORDS = {"stop", "cancel", "exit", "quit", "thanks"}
 AUTO_STOP_PHRASES = {
     "that's all", "thats all", "all done", "finished", "no more", "i'm done", "im done", "nothing else",
@@ -329,7 +327,7 @@ def edit_task(task_id):
     task = Task.query.get_or_404(task_id)
     form = TaskForm()
     if request.method == "POST" and form.validate_on_submit():
-        title = db.Column(db.String(100), nullable=True)  # instead of nullable=False
+        title = db.Column(db.String(100), nullable=True)  
         task.name = normalize_task_name(form.task.data)
         task.due_date = form.due_date.data
         task.task_time = form.task_time.data
@@ -446,7 +444,7 @@ def parse_request_json(req):
     Prevents Flask from throwing 400 errors if the body is empty or malformed.
     """
     try:
-        # Try normal parsing
+        # Normal parsing
         data = req.get_json(force=True, silent=True)
         if not data:
             # Fallback: parse raw request body manually
@@ -461,7 +459,6 @@ def parse_request_json(req):
     return data
 
 # Voice Command 
-# --- Voice flow helpers and parsers (paste into app.py) ---
 from flask import request, jsonify, session
 from datetime import datetime, date, time, timedelta
 import re
@@ -617,7 +614,7 @@ def _fmt_time_for_user(t):
         return t.strftime("%-I:%M %p") if hasattr(t, 'strftime') else str(t)
     return str(t)
 
-# --- voice_command route (drop-in replacement) ---
+# voice_command route
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
     try:
@@ -647,7 +644,7 @@ def voice_command():
         step = flow.get("step")
         task = flow.get("task") or {}
 
-        # ----------------- ADD FLOW -----------------
+        # ADD FLOW
         if mode == "add":
             # 1) Title
             if step == "title":
@@ -791,7 +788,7 @@ def voice_command():
                     "task_added": False
                 })
 
-        # ----------------- DELETE / REMOVE -----------------
+        # DELETE / REMOVE 
         if "delete" in tl or "remove" in tl:
             keyword = "delete" if "delete" in tl else "remove"
             name = tl.split(keyword, 1)[1].strip() if keyword in tl else ""
@@ -859,7 +856,7 @@ def voice_command():
                 "reload_page": True
             })
 
-        # ----------------- LIST -----------------
+        # LIST 
         if "list" in tl or "show" in tl:
             tasks = Task.query.order_by(Task.completed.asc(), Task.id.desc()).all()
             if not tasks:
@@ -876,7 +873,7 @@ def voice_command():
                 "task_added": False
             })
 
-        # ----------------- START ADD FLOW (initial) -----------------
+        # START ADD FLOW (initial) 
         if "add" in tl or "create" in tl or "new task" in tl:
             name = _title_from_transcript(tl)
             if name:

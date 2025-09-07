@@ -154,7 +154,7 @@
 
 <body>
 
-<!--LOGO WITH TITLE AND TAGLINE ALIGNED HORIZONTALLY-->
+<!--LOGO WITH TITLE AND TAGLINE -->
 <div class="logo-title-container">
   <img src="{{ url_for('static', filename='Logo.png') }}" alt="Logo" class="logo">
   <div class="text-section">
@@ -163,7 +163,7 @@
   </div>
 </div>
 
-  <!-- Minimal navbar with theme toggle aligned right -->
+  <!-- Minimal navbar with theme toggle -->
   <nav class="navbar px-3 mb-2 bg-transparent">
     <div class="container-fluid d-flex align-items-center">
       <button id="themeToggle"
@@ -198,7 +198,7 @@
       </div>
     {% endif %}
 
-    <!-- Search & Filter bar (GET submits to same page and updates q/status in URL) -->
+    <!-- Search & Filter bar -->
     <div class="card mb-3">
       <div class="card-body">
         <form method="GET" action="{{ url_for('index') }}" class="d-flex align-items-center gap-2 flex-wrap">
@@ -223,7 +223,7 @@
       </div>
     </div>
 
-    <!-- Add Task form (POST submits to create a new task) -->
+    <!-- Add Task form -->
     <div class="card mb-4">
       <div class="card-header">Add Task</div>
       <div class="card-body">
@@ -268,9 +268,8 @@ let isListening = false;
 let recognition = null;
 let csrfToken = null;
 
-// ----------------------
+
 // Load CSRF token once
-// ----------------------
 fetch("/csrf-token")
   .then(res => res.json())
   .then(data => {
@@ -278,9 +277,7 @@ fetch("/csrf-token")
       console.log("CSRF loaded:", csrfToken);
   });
 
-// ----------------------
 // Speak text using Web Speech API
-// ----------------------
 function speakText(text, callback=null) {
     if (!('speechSynthesis' in window)) {
         if (callback) callback();
@@ -288,8 +285,8 @@ function speakText(text, callback=null) {
     }
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'en-US';
-    utter.rate = 1;   // natural flow
-    utter.pitch = 1;  // human-like
+    utter.rate = 1;   
+    utter.pitch = 1;  
     utter.onend = () => {
         if (callback) callback();
     };
@@ -297,9 +294,7 @@ function speakText(text, callback=null) {
     window.speechSynthesis.speak(utter);
 }
 
-// ----------------------
 // Start voice control
-// ----------------------
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
@@ -317,12 +312,10 @@ function startVoiceControl() {
     document.getElementById('voiceBtn').classList.add('listening');
     document.getElementById('stopBtn').style.display = 'inline-block';
 
-    listenOnce(); // start first round
+    listenOnce(); 
 }
 
-// ----------------------
 // Stop voice control
-// ----------------------
 function stopVoiceControl() {
     isListening = false;
     if (recognition) recognition.stop();
@@ -331,9 +324,7 @@ function stopVoiceControl() {
     document.getElementById('voiceStatus').textContent = '🛑 Voice stopped';
 }
 
-// ----------------------
 // Listen for a single phrase
-// ----------------------
 function listenOnce() {
     if (!isListening) return;
 
@@ -353,9 +344,7 @@ function listenOnce() {
 
         recognition.stop();
 
-        // ----------------------
-        // Send transcript to backend
-        // ----------------------
+        // Send transcript to backend        
         fetch("/voice/command", {
             method: "POST",
             headers: {
@@ -371,12 +360,12 @@ function listenOnce() {
             speakText(data.message || "I didn’t catch that.", () => {
                 document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
 
-                // ✅ Refresh tasks when backend confirms
+                // Refresh tasks when backend confirms
                 if (data.task_added && typeof refreshTaskList === "function") {
                     refreshTaskList();
                 }
 
-                // ✅ Continue conversation if backend says so
+                // Continue conversation if backend says so
                 if (data.continue_listening && isListening) {
                     setTimeout(() => listenOnce(), 600);
                 } else {
@@ -409,10 +398,7 @@ function listenOnce() {
     recognition.start();
 }
 
-
-// ----------------------
 // STOP listening button
-// ----------------------
 function stopVoiceControl() {
     if (recognition) recognition.stop();
     isListening = false;
@@ -421,9 +407,7 @@ function stopVoiceControl() {
     document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
 }
 
-// ----------------------
 // Stop voice control
-// ----------------------
 function stopVoiceControl() {
     if (!isListening) return;
     isListening = false;
@@ -434,7 +418,7 @@ function stopVoiceControl() {
 }
 
 
-        // ✅ FIXED fetch URL
+        // FIXED fetch URL
         fetch("/voice/command", {
     method: "POST",
     headers: {
@@ -445,7 +429,7 @@ function stopVoiceControl() {
 
         .then(r => r.json())
         .then(data => {
-            console.log("Server response:", data); // ✅ Debug
+            console.log("Server response:", data); 
             document.getElementById('voiceStatus').textContent = data.message || 'No message';
 
             if ('speechSynthesis' in window && data.message) {
@@ -510,7 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
 <!-- Add Material Icons -->
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
 
-<!-- Small extra voice helper removed (duplicate) - kept only consolidated functions above -->
+<!-- Small extra voice helper removed (duplicate) -->
 
 <form method="post">
     {{ form.hidden_tag() }}
