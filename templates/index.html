@@ -639,34 +639,30 @@ document.addEventListener('DOMContentLoaded', () => {
 </body>
 
 <style>
-/* Base footer style */
 .footer {
-  width: 100%;             /* stretch full width */
+  width: 100%;            
   display: block;          
   text-align: center;
   padding: 20px;
   font-size: 14px;
   color: #777;
-  background: #f4f4f4;     /* light background */
+  background: #f4f4f4;     
   margin-top: 40px;
   border-top: 1px solid #ddd;
 }
 
-/* Footer links */
 .footer a {
   color: #2980b9;
   text-decoration: none;
   font-weight: 500;
 }
 
-/* Dark mode footer (Bootstrap theme toggle) */
 html[data-bs-theme="dark"] .footer {
-  background: #1a1a1a;     /* dark background */
-  color: #f1f1f1;          /* light text */
+  background: #1a1a1a;     
+  color: #f1f1f1;          
   border-top: 1px solid #444;
 }
 
-/* Dark mode footer links */
 html[data-bs-theme="dark"] .footer a {
   color: #3498db;
 }
@@ -675,7 +671,7 @@ html[data-bs-theme="dark"] .footer a {
   <!-- Theme toggle logic -->
   <script>
     document.addEventListener('DOMContentLoaded', () => {
-      const html  = document.documentElement; // <html>
+      const html  = document.documentElement; 
       const btn   = document.getElementById('themeToggle');
       const icon  = document.getElementById('themeIcon');
 

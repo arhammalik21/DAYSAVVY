@@ -962,7 +962,7 @@ class AIAssistant:
 
 ai_assistant = AIAssistant()
 
-# Favicon / Static helper
+# Favicon / Tab icon
 @app.route('/favicon.ico')
 def favicon():
     """
@@ -974,7 +974,7 @@ def favicon():
 
 # Run server
 if __name__ == "__main__":
-    print("🚀 DaySavvy consolidated app starting up...")
+    print("DaySavvy consolidated app starting up...")
     print("Voice commands available at: POST /voice/command (JSON: {'transcript': '...'})")
     print("Main interface at: http://127.0.0.1:5000/")
     # Ensure DB created
