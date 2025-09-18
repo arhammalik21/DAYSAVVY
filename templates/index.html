@@ -19,7 +19,6 @@
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700&display=swap" rel="stylesheet">
 
   <style>
-    /* Base typography and theme-aware colors */
     body {
       font-family: 'Montserrat', Arial, sans-serif;
       background: var(--bs-body-bg);
@@ -28,7 +27,6 @@
     }
     h1, h2 { font-family: 'Montserrat', Arial, sans-serif; }
 
-    /* Page container width and spacing */
     .container { max-width: 900px; margin: 0 auto; }
 
     /* Flash messages styling */
@@ -53,7 +51,6 @@
       border: none !important; box-shadow: none !important;
     }
 
-    /* Logo/title styles preserved from original */
     .logo-title-container {
       display: flex !important;
       align-items: center !important;
@@ -268,7 +265,6 @@ let isListening = false;
 let recognition = null;
 let csrfToken = null;
 
-
 // Load CSRF token once
 fetch("/csrf-token")
   .then(res => res.json())
@@ -290,7 +286,7 @@ function speakText(text, callback=null) {
     utter.onend = () => {
         if (callback) callback();
     };
-    window.speechSynthesis.cancel(); // prevent overlapping voices
+    window.speechSynthesis.cancel(); 
     window.speechSynthesis.speak(utter);
 }
 
@@ -331,7 +327,7 @@ function listenOnce() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = false; // only capture final result
+    recognition.interimResults = false; 
     recognition.lang = 'en-US';
 
     recognition.onstart = () => {
@@ -385,14 +381,15 @@ function listenOnce() {
         document.getElementById('voiceStatus').textContent = "❌ Voice error: " + event.error;
 
         if (event.error === "no-speech" && isListening) {
-            setTimeout(() => listenOnce(), 600); // retry softly
+            setTimeout(() => listenOnce(), 600); 
         } else {
             stopVoiceControl();
         }
     };
 
     recognition.onend = () => {
-        // Do nothing — we explicitly restart inside .onresult when needed
+
+
     };
 
     recognition.start();
@@ -493,8 +490,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
 <!-- Add Material Icons -->
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
-
-<!-- Small extra voice helper removed (duplicate) -->
 
 <form method="post">
     {{ form.hidden_tag() }}
