@@ -60,7 +60,6 @@ def get_csrf_token():
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
-# Create DB tables on startup if not present (safe in dev)
 with app.app_context():
     db.create_all()
 
@@ -286,7 +285,6 @@ def index():
         db.session.add(t)
         db.session.commit()
         flash("Task added!", "success")
-        # Redirect to avoid duplicate POST on refresh
         return redirect(url_for("index"))
 
     # Query parameters for search/status filters
@@ -727,7 +725,6 @@ def voice_command():
 
             # 5) Confirm
             if step == "confirm":
-                # YES path
                 if any(w in tl for w in YES_WORDS):
                     # parse stored text -> date/time objects
                     parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
