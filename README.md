@@ -1,7 +1,6 @@
 # DAYSAVVY
 
-DAYSAVVY is a simple and intuitive To-Do List web application with AI voice command that can add all the functions with voice only and all these built with Python and Flask.  
-It helps users organize their tasks by allowing easy adding , manging , editing and deleting of tasks in a clean interface.
+Developed a full-featured task management web application using Flask, Python, SQLAlchemy, HTML, CSS, and JavaScript, featuring AI voice integration for adding and managing tasks. Implemented task creation, categorization, editing, deletion, and date-time tracking with a responsive UI and secure backend database management. Leveraged AI voice commands to enhance user interaction and productivity, delivering a seamless and intelligent task management experience.
 
 ## Features
 Add new tasks quickly: Enter tasks in a responsive input box, just hit ‘Add’! or say it through AI VOICE.
