@@ -324,8 +324,7 @@ def edit_task(task_id):
     """
     task = Task.query.get_or_404(task_id)
     form = TaskForm()
-    if request.method == "POST" and form.validate_on_submit():
-        title = db.Column(db.String(100), nullable=True)  
+    if request.method == "POST" and form.validate_on_submit():  
         task.name = normalize_task_name(form.task.data)
         task.due_date = form.due_date.data
         task.task_time = form.task_time.data
@@ -609,7 +608,7 @@ def _fmt_time_for_user(t):
     if t is None:
         return "none"
     if isinstance(t, time):
-        return t.strftime("%-I:%M %p") if hasattr(t, 'strftime') else str(t)
+        return t.strftime("%I:%M %p").lstrip("0") if hasattr(t, 'strftime') else str(t)
     return str(t)
 
 # voice_command route
