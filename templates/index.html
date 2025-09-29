@@ -11,7 +11,6 @@
   <title>DaySavvy</title>
   <link rel="icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
   <link rel="shortcut icon" type="image/x-icon" href="{{ url_for('static', filename='favicon.ico') }}">
-  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
 
   <!-- Bootstrap CSS and Google Font -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
@@ -403,17 +402,6 @@ function stopVoiceControl() {
     document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
 }
 
-// Stop voice control
-function stopVoiceControl() {
-    if (!isListening) return;
-    isListening = false;
-    if (recognition) recognition.stop();
-    document.getElementById('voiceBtn').classList.remove('listening');
-    document.getElementById('stopBtn').style.display = 'none';
-    document.getElementById('voiceStatus').textContent = 'Voice control stopped.';
-}
-
-
         // FIXED fetch URL
         fetch("/voice/command", {
     method: "POST",
@@ -422,7 +410,6 @@ function stopVoiceControl() {
     },
     body: JSON.stringify({ transcript })
 })
-
         .then(r => r.json())
         .then(data => {
             console.log("Server response:", data); 
