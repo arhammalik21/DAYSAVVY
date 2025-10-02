@@ -288,7 +288,7 @@ function speakText(text, callback=null) {
     window.speechSynthesis.speak(utter);
 }
 
-// Start voice control (updated to include welcome message)
+// Start voice control
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
@@ -419,7 +419,7 @@ function stopVoiceControl() {
     document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
 }
 
-        // FIXED fetch URL
+        // Fetch URL
         fetch("/voice/command", {
     method: "POST",
     headers: {
