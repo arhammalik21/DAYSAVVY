@@ -288,7 +288,7 @@ function speakText(text, callback=null) {
     window.speechSynthesis.speak(utter);
 }
 
-// Start voice control
+// Start voice control (updated to include welcome message)
 function startVoiceControl() {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
         document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
@@ -306,7 +306,23 @@ function startVoiceControl() {
     document.getElementById('voiceBtn').classList.add('listening');
     document.getElementById('stopBtn').style.display = 'inline-block';
 
-    listenOnce(); 
+    // Fetch welcome message first
+    fetch("/voice/welcome")
+        .then(res => res.json())
+        .then(data => {
+            speakText(data.message, () => {
+                document.getElementById('voiceStatus').textContent = data.message;
+                if (data.continue_listening && isListening) {
+                    listenOnce();
+                } else {
+                    stopVoiceControl();
+                }
+            });
+        })
+        .catch(err => {
+            document.getElementById('voiceStatus').textContent = "❌ Error starting voice";
+            stopVoiceControl();
+        });
 }
 
 // Stop voice control
@@ -392,6 +408,7 @@ function listenOnce() {
 
     recognition.start();
 }
+
 
 // STOP listening button
 function stopVoiceControl() {
