@@ -460,6 +460,17 @@ from flask import request, jsonify, session
 from datetime import datetime, date, time, timedelta
 import re
 
+#Welcome route
+@app.route("/voice/welcome", methods=["GET"])
+def voice_welcome():
+    """
+    Returns a welcome message for the AI voice assistant.
+    """
+    return jsonify({
+        "message": "Welcome to DaySavvy! What would you like to do? You can say things like 'add a task', 'list my tasks', or 'complete a task'.",
+        "continue_listening": True
+    })
+
 # Words used for yes/no checks
 YES_WORDS = {"yes", "yeah", "yup", "sure", "correct", "save", "affirmative"}
 NO_WORDS = {"no", "nah", "nope", "don't", "dont", "do not", "cancel"}
