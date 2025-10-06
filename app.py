@@ -95,6 +95,7 @@ class Task(db.Model):
     category = db.Column(db.String(100), default='Other')
     completed = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    priority = db.Column(db.String(20), default='Normal')
 
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
