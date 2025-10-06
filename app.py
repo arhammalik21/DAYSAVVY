@@ -276,17 +276,17 @@ def index():
     """
     form = TaskForm()
     if form.validate_on_submit():
-        # Create DB-backed task
-        t = Task(
-            name = normalize_task_name(form.task.data),
-            due_date = form.due_date.data,
-            task_time = form.task_time.data,
-            category = form.category.data
-        )
-        db.session.add(t)
-        db.session.commit()
-        flash("Task added!", "success")
-        return redirect(url_for("index"))
+     t = Task(
+        name = normalize_task_name(form.task.data),
+        due_date = form.due_date.data,
+        task_time = form.task_time.data,
+        category = form.category.data,
+        priority = classify_priority(form.task.data)  # <-- ADD THIS LINE
+    )
+    db.session.add(t)
+    db.session.commit()
+    flash("Task added!", "success")
+    return redirect(url_for("index"))
 
     # Query parameters for search/status filters
     q = request.args.get("q", "").strip()
@@ -330,6 +330,7 @@ def edit_task(task_id):
         task.due_date = form.due_date.data
         task.task_time = form.task_time.data
         task.category = form.category.data
+        task.priority = classify_priority(form.task.data)
         db.session.commit()
         flash("Task updated!", "success")
         return redirect(url_for("index"))
@@ -427,6 +428,17 @@ def api_update_task(task_id):
         t.completed = bool(data.get("completed"))
     db.session.commit()
     return jsonify(task_to_dict(t))
+
+def classify_priority(task_name: str) -> str:
+    """Classify priority based on keywords in the task name."""
+    name = task_name.lower()
+    if any(word in name for word in ["urgent", "asap", "immediately", "now", "today"]):
+        return "Urgent"
+    if any(word in name for word in ["important", "priority", "soon", "high"]):
+        return "High"
+    if any(word in name for word in ["later", "someday", "eventually", "low"]):
+        return "Low"
+    return "Normal"
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def api_delete_task(task_id):
