@@ -557,6 +557,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span class="badge bg-info">🕒 {{ task.task_time.strftime('%I:%M %p') }}</span>
           {% endif %}
           <span class="badge bg-primary">{{ task.category }}</span>
+          <span class="badge bg-warning text-dark">{{ task.priority }}</span>
         </div>
 
         <!-- Action buttons -->
@@ -606,6 +607,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <span class="badge bg-info">🕒 {{ task.task_time.strftime('%I:%M %p') }}</span>
           {% endif %}
           <span class="badge bg-primary">{{ task.category }}</span>
+          <span class="badge bg-warning text-dark">{{ task.priority }}</span>
         </div>
 
         <!-- Action buttons -->
