@@ -268,27 +268,21 @@ def add_no_cache_headers(response):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    """
-    Main web page:
-    - Supports adding tasks via form (task name, due_date, time, category)
-    - Queries DB for tasks and passes them to template
-    - Template should iterate over `incomplete_tasks` and `completed_tasks`
-    """
     form = TaskForm()
     if form.validate_on_submit():
-     t = Task(
-        name = normalize_task_name(form.task.data),
-        due_date = form.due_date.data,
-        task_time = form.task_time.data,
-        category = form.category.data,
-        priority = classify_priority(form.task.data)  # <-- ADD THIS LINE
-    )
-    db.session.add(t)
-    db.session.commit()
-    flash("Task added!", "success")
-    return redirect(url_for("index"))
+        t = Task(
+            name = normalize_task_name(form.task.data),
+            due_date = form.due_date.data,
+            task_time = form.task_time.data,
+            category = form.category.data,
+            priority = classify_priority(form.task.data)
+        )
+        db.session.add(t)
+        db.session.commit()
+        flash("Task added!", "success")
+        return redirect(url_for("index"))
 
-    # Query parameters for search/status filters
+    # Everything below is OUTSIDE the form block and does NOT use t
     q = request.args.get("q", "").strip()
     status = request.args.get("status", "").strip()
 
@@ -306,7 +300,7 @@ def index():
     incomplete_tasks = [t for t in tasks_filtered if not t.completed]
     completed_tasks = [t for t in tasks_filtered if t.completed]
 
-    # Debug console prints
+    # Debug prints (these use t only inside the list comprehensions)
     print(f"DEBUG: Total tasks: {len(tasks_filtered)}; incomplete: {len(incomplete_tasks)}; completed: {len(completed_tasks)}")
     for t in tasks_filtered:
         print(f"  Task {t.id}: {t.name} | completed={t.completed} | due={t.due_date} time={t.task_time} category={t.category}")
