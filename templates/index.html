@@ -371,10 +371,11 @@ function listenOnce() {
                 document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
 
                 // Refresh tasks when backend confirms
-                if (data.task_added && typeof refreshTaskList === "function") {
-                    refreshTaskList();
+                if (data.reload_page) {
+                    setTimeout(() => location.reload(), 500);
+                    stopVoiceControl();
+                    return;
                 }
-
                 // Continue conversation if backend says so
                 if (data.continue_listening && isListening) {
                     setTimeout(() => listenOnce(), 600);
@@ -389,7 +390,6 @@ function listenOnce() {
             stopVoiceControl();
         });
     };
-
     recognition.onerror = (event) => {
         console.error("Speech recognition error:", event.error);
         document.getElementById('voiceStatus').textContent = "❌ Voice error: " + event.error;
@@ -418,77 +418,6 @@ function stopVoiceControl() {
     document.getElementById('stopBtn').style.display = 'none';
     document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
 }
-
-        // Fetch URL
-        fetch("/voice/command", {
-    method: "POST",
-    headers: {
-        "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ transcript })
-})
-        .then(r => r.json())
-        .then(data => {
-            console.log("Server response:", data); 
-            document.getElementById('voiceStatus').textContent = data.message || 'No message';
-
-            if ('speechSynthesis' in window && data.message) {
-                speechSynthesis.cancel();
-                const utterance = new SpeechSynthesisUtterance(data.message);
-                utterance.rate = 1.2;
-
-                utterance.onend = () => {
-                    if (data.reload_page) {
-                        setTimeout(() => location.reload(), 500);
-                    } else if (data.continue_listening === false) {
-                        stopVoiceControl();
-                    } else {
-                        setTimeout(() => { if (isListening) startListening(); }, 200);
-                    }
-                };
-                speechSynthesis.speak(utterance);
-            } else {
-                if (data.continue_listening === false) stopVoiceControl();
-                else setTimeout(() => { if (isListening) startListening(); }, 200);
-                if (data.reload_page) setTimeout(() => location.reload(), 500);
-            }
-        })
-        .catch(error => {
-            console.error('Command error:', error);
-            setTimeout(() => { if (isListening) startListening(); }, 500);
-        });
-
-    recognition.onend = () => {
-        if (isListening && !speechSynthesis.speaking) {
-            setTimeout(startListening, 100);
-        }
-    };
-
-    recognition.onerror = (event) => {
-        if (event.error !== 'no-speech') console.error('Recognition error:', event.error);
-        if (isListening) setTimeout(startListening, 300);
-    };
-
-    try {
-      recognition.start();
-    } catch (err) {
-      console.warn('recognition.start error', err);
-    }
-
-function stopVoiceControl() {
-    isListening = false;
-    if (recognition) try { recognition.stop(); } catch(e){}
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
-
-    document.getElementById('voiceBtn').classList.remove('listening');
-    document.getElementById('stopBtn').style.display = 'none';
-    document.getElementById('voiceStatus').textContent = 'Voice control stopped';
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  const stopBtn = document.getElementById('stopBtn');
-  if (stopBtn) stopBtn.addEventListener('click', stopVoiceControl);
-});
 </script>
 
 <!-- Add Material Icons -->
