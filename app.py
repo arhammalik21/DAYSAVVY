@@ -721,86 +721,37 @@ def voice_command():
                 else:
                     cat = transcript.strip().title() or "Other"
                 task["category"] = cat
-                flow["step"] = "confirm"
-                flow["task"] = task
-                _save_flow(flow)
-
-                # Preview parsed values for the user (if parsable)
+                # Parse due and time
                 parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
                 parsed_time = parse_task_time(task.get("time_text")) if task.get("time_text") else None
 
+                # Create and save task immediately
+                new_task = Task(
+                    name=task.get("name"),
+                    due_date=parsed_due,
+                    task_time=parsed_time,
+                    category=task.get("category", "Other")
+             )
+                db.session.add(new_task)
+                db.session.commit()
+
+                new_task_data = {
+                    "id": new_task.id,
+                    "name": new_task.name,
+                    "due_date": new_task.due_date.isoformat() if new_task.due_date else None,
+                    "task_time": new_task.task_time.strftime("%H:%M:%S") if new_task.task_time else None,
+                    "category": new_task.category,
+                    "completed": bool(new_task.completed),
+                }
+
+                _clear_flow()
                 return jsonify({
-                    "message": (
-                        f"Confirm: '{task.get('name')}' "
-                        f"(Due: {_fmt_date_for_user(parsed_due)}, "
-                        f"Time: {_fmt_time_for_user(parsed_time)}, "
-                        f"Category: {task.get('category')}). Should I save? Say 'yes' or 'no'."
-                    ),
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # 5) Confirm
-            if step == "confirm":
-                if any(w in tl for w in YES_WORDS):
-                    # parse stored text -> date/time objects
-                    parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
-                    parsed_time = parse_task_time(task.get("time_text")) if task.get("time_text") else None
-
-                    # create and save
-                    new_task = Task(
-                        name=task.get("name"),
-                        due_date=parsed_due,
-                        task_time=parsed_time,
-                        category=task.get("category", "Other")
-                    )
-                    db.session.add(new_task)
-                    db.session.commit()
-
-                    new_task_data = {
-                        "id": new_task.id,
-                        "name": new_task.name,
-                        "due_date": new_task.due_date.isoformat() if new_task.due_date else None,
-                        "task_time": new_task.task_time.strftime("%H:%M:%S") if new_task.task_time else None,
-                        "category": new_task.category,
-                        "completed": bool(new_task.completed),
-                    }
-
-                    _clear_flow()
-                    return jsonify({
-                        "message": f"Task '{new_task.name}' saved.",
-                        "continue_listening": False,
-                        "task_added": True,
-                        "reload_page": True,
-                        "new_task": new_task_data
-                    })
-
-                # NO path
-                if any(w in tl for w in NO_WORDS):
-                    _clear_flow()
-                    return jsonify({
-                        "message": "Okay, discarded.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
-
-                # Neither yes nor no -> retry once, then discard
-                retries = int(task.get("_retries", 0)) + 1
-                task["_retries"] = retries
-                flow["task"] = task
-                _save_flow(flow)
-                if retries >= 2:
-                    _clear_flow()
-                    return jsonify({
-                        "message": "Didn’t get a clear yes or no. Discarding the task.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
-                return jsonify({
-                    "message": "Please say 'yes' to save or 'no' to discard.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
+                      "message": f"Task '{new_task.name}' saved.",
+                      "continue_listening": False,
+                      "task_added": True,
+                      "reload_page": True,
+                      "new_task": new_task_data
+             })
 
         # DELETE / REMOVE 
         if "delete" in tl or "remove" in tl:
