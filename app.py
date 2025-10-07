@@ -63,6 +63,27 @@ migrate = Migrate(app, db)
 with app.app_context():
     db.create_all()
 
+# Background task for reminders
+import time as time_mod
+
+def reminder_checker():
+    while True:
+        with app.app_context():
+            now = datetime.now()
+            tasks = Task.query.filter(
+                Task.reminder_time != None,
+                Task.reminder_time <= now,
+                Task.completed == False
+            ).all()
+            for t in tasks:
+                print(f"[REMINDER] Task '{t.name}' is due now!")
+                # Optionally, mark as reminded or send a notification
+                t.reminder_time = None  # Prevent repeat
+                db.session.commit()
+        time_mod.sleep(60)  # Check every minute
+
+threading.Thread(target=reminder_checker, daemon=True).start()
+
 # Voice Command Constants & Globals
 STOP_WORDS = {"stop", "cancel", "exit", "quit", "thanks"}
 AUTO_STOP_PHRASES = {
@@ -96,6 +117,7 @@ class Task(db.Model):
     completed = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     priority = db.Column(db.String(20), default='Normal')
+    reminder_time = db.Column(db.DateTime, nullable=True)
 
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
@@ -109,6 +131,7 @@ class TaskForm(FlaskForm):
     category = SelectField('Category', choices=[
         ('Work', 'Work'), ('Personal', 'Personal'), ('Study', 'Study'), ('Other', 'Other')
     ])
+    reminder_time = StringField('Reminder Time (YYYY-MM-DD HH:MM)', validators=[WTOptional()])
     submit = SubmitField('Add Task')
 
 # Helper utilities
@@ -266,16 +289,30 @@ def add_no_cache_headers(response):
     response.headers['Expires'] = '0'
     return response
 
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     form = TaskForm()
     if form.validate_on_submit():
+        reminder_dt = None
+        if form.reminder_time.data:
+            try:
+                reminder_dt = datetime.strptime(form.reminder_time.data, "%Y-%m-%d %H:%M")
+            except Exception:
+                reminder_dt = None
+
+        task_name = form.task.data
+        if not task_name:
+            flash("Task name is required.", "warning")
+            return redirect(url_for("index"))
+
         t = Task(
-            name = normalize_task_name(form.task.data),
+            name = normalize_task_name(task_name),
             due_date = form.due_date.data,
             task_time = form.task_time.data,
             category = form.category.data,
-            priority = classify_priority(form.task.data)
+            priority = classify_priority(task_name),
+            reminder_time = reminder_dt
         )
         db.session.add(t)
         db.session.commit()
@@ -300,7 +337,6 @@ def index():
     incomplete_tasks = [t for t in tasks_filtered if not t.completed]
     completed_tasks = [t for t in tasks_filtered if t.completed]
 
-    # Debug prints (these use t only inside the list comprehensions)
     print(f"DEBUG: Total tasks: {len(tasks_filtered)}; incomplete: {len(incomplete_tasks)}; completed: {len(completed_tasks)}")
     for t in tasks_filtered:
         print(f"  Task {t.id}: {t.name} | completed={t.completed} | due={t.due_date} time={t.task_time} category={t.category}")
