@@ -117,6 +117,7 @@ class Task(db.Model):
     completed = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     priority = db.Column(db.String(20), default='Normal')
+    reminder_time = db.Column(db.DateTime, nullable=True)
     
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
@@ -293,11 +294,8 @@ def index():
     form = TaskForm()
     if form.validate_on_submit():
         reminder_dt = None
-        if form.reminder_time.data:
-            try:
-                reminder_dt = datetime.strptime(form.reminder_time.data, "%Y-%m-%d %H:%M")
-            except Exception:
-                reminder_dt = None
+    if form.due_date.data and form.task_time.data:
+        reminder_dt = datetime.combine(form.due_date.data, form.task_time.data)
 
         task_name = form.task.data
         if not task_name:
