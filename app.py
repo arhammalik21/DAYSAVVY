@@ -117,8 +117,7 @@ class Task(db.Model):
     completed = db.Column(db.Boolean, default=False, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     priority = db.Column(db.String(20), default='Normal')
-    reminder_time = db.Column(db.DateTime, nullable=True)
-
+    
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
 
@@ -131,7 +130,6 @@ class TaskForm(FlaskForm):
     category = SelectField('Category', choices=[
         ('Work', 'Work'), ('Personal', 'Personal'), ('Study', 'Study'), ('Other', 'Other')
     ])
-    reminder_time = StringField('Reminder Time (YYYY-MM-DD HH:MM)', validators=[WTOptional()])
     submit = SubmitField('Add Task')
 
 # Helper utilities
@@ -305,6 +303,11 @@ def index():
         if not task_name:
             flash("Task name is required.", "warning")
             return redirect(url_for("index"))
+        
+        # Set reminder_time if both due_date and task_time are provided
+        reminder_dt = None
+        if form.due_date.data and form.task_time.data:
+            reminder_dt = datetime.combine(form.due_date.data, form.task_time.data)
 
         t = Task(
             name = normalize_task_name(task_name),
