@@ -6,6 +6,7 @@ import json
 import threading
 from datetime import datetime, date, timedelta, time as dt_time
 from typing import Optional, Dict, Any, Tuple
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Flask + extensions
 from flask import (
@@ -60,12 +61,8 @@ def get_csrf_token():
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
-with app.app_context():
-    db.create_all()
-
 # Background task for reminders
 import time as time_mod
-
 def reminder_checker():
     while True:
         with app.app_context():
@@ -77,12 +74,9 @@ def reminder_checker():
             ).all()
             for t in tasks:
                 print(f"[REMINDER] Task '{t.name}' is due now!")
-                # Optionally, mark as reminded or send a notification
-                t.reminder_time = None  # Prevent repeat
+                t.reminder_time = None
                 db.session.commit()
-        time_mod.sleep(60)  # Check every minute
-
-threading.Thread(target=reminder_checker, daemon=True).start()
+        time_mod.sleep(60)
 
 # Voice Command Constants & Globals
 STOP_WORDS = {"stop", "cancel", "exit", "quit", "thanks"}
@@ -110,6 +104,7 @@ class Task(db.Model):
       - created_at (datetime)
     """
     id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     name = db.Column(db.String(300), nullable=False)
     due_date = db.Column(db.Date, nullable=True)
     task_time = db.Column(db.Time, nullable=True)
@@ -121,8 +116,57 @@ class Task(db.Model):
     
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
+    
+# Account and Authentication
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password = db.Column(db.String(200), nullable=False)
+    tasks = db.relationship('Task', backref='user', lazy=True) 
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    form = RegisterForm()
+    if form.validate_on_submit():
+        hashed_pw = generate_password_hash(form.password.data)
+        user = User(username=form.username.data, password=hashed_pw)
+        db.session.add(user)
+        db.session.commit()
+        flash("Registration successful! Please log in.", "success")
+        return redirect(url_for("login"))
+    return render_template("register.html", form=form)
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    form = LoginForm()
+    if form.validate_on_submit():
+        user = User.query.filter_by(username=form.username.data).first()
+        if user and check_password_hash(user.password, form.password.data):
+            session["user_id"] = user.id
+            flash("Logged in successfully!", "success")
+            return redirect(url_for("index"))
+        else:
+            flash("Invalid username or password.", "danger")
+    return render_template("login.html", form=form)
+
+@app.route("/logout")
+def logout():
+    session.pop("user_id", None)
+    flash("Logged out.", "info")
+    return redirect(url_for("login"))   
 
 # Forms
+class RegisterForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = StringField('Password', validators=[DataRequired()])
+    submit = SubmitField('Register')
+
+class LoginForm(FlaskForm):
+    username = StringField('Username', validators=[DataRequired()])
+    password = StringField('Password', validators=[DataRequired()])
+    submit = SubmitField('Login')
+
 class TaskForm(FlaskForm):
     """WTForms form used in the web UI to add/update tasks."""
     task = StringField('Task', validators=[DataRequired()])
@@ -137,13 +181,16 @@ class TaskForm(FlaskForm):
 def task_to_dict(t: Task) -> Dict[str, Any]:
     """Serialize Task model to JSON-serializable dict for APIs and voice responses."""
     return {
-        "id": t.id,
+       "id": t.id,
         "name": t.name,
         "completed": t.completed,
         "due_date": t.due_date.strftime("%Y-%m-%d") if t.due_date else None,
         "task_time": t.task_time.strftime("%H:%M:%S") if t.task_time else None,
         "category": t.category,
-        "created_at": t.created_at.isoformat() if t.created_at else None
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "priority": t.priority,
+        "reminder_time": t.reminder_time.isoformat() if t.reminder_time else None,
+        "user_id": t.user_id,
     }
 
 def parse_time_from_text(text: str) -> Optional[dt_time]:
@@ -247,6 +294,8 @@ def parse_due_date_from_text(text: str) -> Optional[date]:
 
 def normalize_task_name(s: str) -> str:
     """Cleanup task name text (strip, collapse spaces)."""
+    if not s:
+        return ""
     return re.sub(r'\s+', ' ', s.strip())
 
 # TTS playing helper (non-blocking)
@@ -291,7 +340,11 @@ def add_no_cache_headers(response):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    if "user_id" not in session:
+        return redirect(url_for("login"))
+    user_id = session["user_id"]
     form = TaskForm()
+    
     if form.validate_on_submit():
         reminder_dt = None
     if form.due_date.data and form.task_time.data:
@@ -302,7 +355,6 @@ def index():
             flash("Task name is required.", "warning")
             return redirect(url_for("index"))
         
-        # Set reminder_time if both due_date and task_time are provided
         reminder_dt = None
         if form.due_date.data and form.task_time.data:
             reminder_dt = datetime.combine(form.due_date.data, form.task_time.data)
@@ -313,18 +365,17 @@ def index():
             task_time = form.task_time.data,
             category = form.category.data,
             priority = classify_priority(task_name),
-            reminder_time = reminder_dt
+            reminder_time = reminder_dt,
+            user_id = user_id
         )
         db.session.add(t)
         db.session.commit()
         flash("Task added!", "success")
         return redirect(url_for("index"))
 
-    # Everything below is OUTSIDE the form block and does NOT use t
     q = request.args.get("q", "").strip()
     status = request.args.get("status", "").strip()
-
-    query = Task.query
+    query = Task.query.filter_by(user_id=user_id)
     if q:
         query = query.filter(Task.name.contains(q))
     if status == "incomplete":
@@ -398,38 +449,47 @@ def complete_task(task_id):
 # API endpoints for AJAX or external access
 @app.route("/api/tasks", methods=["GET"])
 def api_get_tasks():
-    """Return JSON list of tasks (newest first)."""
-    tasks_q = Task.query.order_by(Task.created_at.desc()).all()
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    tasks_q = Task.query.filter_by(user_id=uid).order_by(Task.created_at.desc()).all()
     return jsonify([task_to_dict(t) for t in tasks_q])
 
 @app.route("/api/tasks", methods=["POST"])
 def api_add_task():
-    """Add a task using JSON body. Returns created task."""
-
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json() or {}
     name = data.get("name") or data.get("task") or ""
     if not name.strip():
         return jsonify({"error": "Task name is required"}), 400
+
     due_date = None
     if data.get("due_date"):
         try:
-            due_date = datetime.strptime(data.get("due_date"), "%Y-%m-%d").date()
+            due_date = datetime.strptime(data["due_date"], "%Y-%m-%d").date()
         except Exception:
             due_date = None
-    task_time = None
+        task_time = None
     if data.get("task_time"):
-        try:
-            task_time = datetime.strptime(data.get("task_time"), "%H:%M:%S").time()
-        except Exception:
+        for fmt in ("%H:%M:%S", "%H:%M"):
             try:
-                task_time = datetime.strptime(data.get("task_time"), "%H:%M").time()
+                task_time = datetime.strptime(data["task_time"], fmt).time()
+                break
             except Exception:
-                task_time = None
+                pass
+
+    reminder_dt = datetime.combine(due_date, task_time) if (due_date and task_time) else None
+
     t = Task(
-        name = normalize_task_name(name),
-        due_date = due_date,
-        task_time = task_time,
-        category = data.get("category", "Other")
+        name=normalize_task_name(name),
+        due_date=due_date,
+        task_time=task_time,
+        category=data.get("category", "Other"),
+        priority=classify_priority(name),
+        reminder_time=reminder_dt,
+        user_id=uid
     )
     db.session.add(t)
     db.session.commit()
@@ -437,22 +497,27 @@ def api_add_task():
 
 @app.route("/api/tasks/<int:task_id>", methods=["PUT"])
 def api_update_task(task_id):
-    """Update a task via JSON body."""
-    t = Task.query.get_or_404(task_id)
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    t = Task.query.filter_by(id=task_id, user_id=uid).first_or_404()
     data = request.get_json() or {}
     if "name" in data:
         t.name = normalize_task_name(data["name"])
+        t.priority = classify_priority(t.name)
     if "due_date" in data:
         try:
-            t.due_date = datetime.strptime(data.get("due_date"), "%Y-%m-%d").date() if data.get("due_date") else None
+            t.due_date = datetime.strptime(data["due_date"], "%Y-%m-%d").date() if data.get("due_date") else None
         except Exception:
             pass
     if "task_time" in data:
-        try:
-            t.task_time = datetime.strptime(data.get("task_time"), "%H:%M").time() if data.get("task_time") else None
-        except Exception:
-            pass
-
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                t.task_time = datetime.strptime(data["task_time"], fmt).time() if data.get("task_time") else None
+                break
+            except Exception:
+                continue
+    t.reminder_time = datetime.combine(t.due_date, t.task_time) if (t.due_date and t.task_time) else None
     if "category" in data:
         t.category = data.get("category", t.category)
     if "completed" in data:
@@ -473,7 +538,10 @@ def classify_priority(task_name: str) -> str:
 
 @app.route("/api/tasks/<int:task_id>", methods=["DELETE"])
 def api_delete_task(task_id):
-    t = Task.query.get_or_404(task_id)
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    t = Task.query.filter_by(id=task_id, user_id=uid).first_or_404()
     db.session.delete(t)
     db.session.commit()
     return jsonify({"message": "Task deleted"})
@@ -767,7 +835,10 @@ def voice_command():
                     name=task.get("name"),
                     due_date=parsed_due,
                     task_time=parsed_time,
-                    category=task.get("category", "Other")
+                    category=task.get("category", "Other"),
+                    priority=classify_priority(task.get("name") or ""),
+                    reminder_time=(datetime.combine(parsed_due, parsed_time) if (parsed_due and parsed_time) else None),
+                    user_id=session.get("user_id")
              )
                 db.session.add(new_task)
                 db.session.commit()
@@ -982,4 +1053,5 @@ if __name__ == "__main__":
     # Ensure DB created
     with app.app_context():
         db.create_all()
+        threading.Thread(target=reminder_checker, daemon=True).start()
     app.run(debug=True, host='0.0.0.0', port=5000)
