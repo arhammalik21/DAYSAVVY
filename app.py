@@ -156,6 +156,12 @@ def logout():
     flash("Logged out.", "info")
     return redirect(url_for("login"))   
 
+@app.context_processor
+def inject_current_user():
+    uid = session.get("user_id")
+    user = User.query.get(uid) if uid else None
+    return {"current_user": user}
+
 # Forms
 class RegisterForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired()])
