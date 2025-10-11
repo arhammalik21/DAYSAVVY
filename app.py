@@ -346,10 +346,6 @@ def index():
     form = TaskForm()
     
     if form.validate_on_submit():
-        reminder_dt = None
-    if form.due_date.data and form.task_time.data:
-        reminder_dt = datetime.combine(form.due_date.data, form.task_time.data)
-
         task_name = form.task.data
         if not task_name:
             flash("Task name is required.", "warning")
