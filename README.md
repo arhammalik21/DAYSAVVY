@@ -1,37 +1,83 @@
 # DAYSAVVY
 
-Developed a full-featured task management web application using Flask, Python, SQLAlchemy, HTML, CSS, and JavaScript, featuring AI voice integration for adding and managing tasks. Implemented task creation, categorization, editing, deletion, and date-time tracking with a responsive UI and secure backend database management. Leveraged AI voice commands to enhance user interaction and productivity, delivering a seamless and intelligent task management experience.
+DaySavvy is a fast, voice‑enabled task manager that helps you capture, organize, and complete work with zero friction. Built with Flask, SQLAlchemy, and Jinja, it provides secure user accounts with per‑user task isolation, lightning‑quick CRUD, due dates and times with automatic server‑side reminders, smart category badges and auto‑priority from task intent, powerful search and status filters, and a clean, responsive UI. Speak or type: the AI voice assistant can add, list, complete, and delete tasks using natural language. A session‑scoped REST API enables integrations, while CSRF protection and sane defaults keep things safe. Runs anywhere with SQLite by default and can scale to production databases via DATABASE_URL.
+
 
 ## Features
-Add new tasks quickly: Enter tasks in a responsive input box, just hit ‘Add’! or say it through AI VOICE.
 
-Delete tasks effortlessly: Remove any task with a single click using the red “Delete” button or just say "DELETE that particular task" through AI VOICE.
+- Accounts & Security
+  - Register, Login, Logout (session-based)
+  - Per‑user task isolation (each user sees only their tasks)
+  - CSRF‑protected forms and secure session handling
 
-Mark tasks as completed: Click “Complete” to instantly move a task to the completed section.
+- Fast Task Management
+  - Quick add, Edit, Complete, Delete (CRUD) with instant feedback
+  - Due date and time support
+  - Automatic priority classification (Urgent / High / Normal / Low) from task text
+  - Categories with badges (Work, Personal, Study, Other)
 
-Edit tasks : Click "Edit" to update or edit any particular task.
+- Smart Views
+  - Quick search by task name (q parameter)
+  - Filters: Incomplete, Completed, Overdue
+  - Sorted lists (newest first) with clear separation of sections
 
-Clear visual separation: See your Incomplete and Completed Tasks organized into separate lists with headings.
+- Reminders
+  - Auto reminder_time = due_date + time
+  - Lightweight background checker (every minute) prints “[REMINDER] …” to server console
 
-Flash feedback for all actions: Get instant success or warning messages when you add, complete, or delete a task.
+- Voice Assistant
+  - Natural voice/text commands via POST /voice/command
+  - Add, list, complete, and delete tasks by phrase
+  - Optional TTS feedback (gTTS + pygame), gracefully degrades to console
 
-Form validation with helpful errors: Prevents blank tasks; displays a clear warning if you try to submit an empty task.
+- REST API (session‑based)
+  - GET /api/tasks, POST /api/tasks, PUT /api/tasks/<id>, DELETE /api/tasks/<id>
+  - JSON responses with priority, due date/time, reminder_time
 
-Modern, mobile-friendly UI: Minimalist, clean layout that looks great on phone or desktop.
+- UX & Polish
+  - Responsive, mobile‑friendly layout
+  - Flash messages for success/warnings/errors
+  - Favicon served at /favicon.ico
+  - No‑cache headers to always see fresh data
+  - Friendly 404 handling for missing resources
 
-Accessible interface: Easy-to-use buttons, readable font, and high-contrast color choices.
+- Dev & Infra
+  - SQLite out of the box; DATABASE_URL supported for other DBs
+  - Flask‑Migrate ready (migrations capable)
+  - Clean project structure and Windows‑friendly run scripts
 
-404 error handling: Friendly fallback if you try to complete/delete a nonexistent task.
+## Tech Stack
 
-## Technologies Used
+- Python 3.11+
+- Flask, Jinja2
+- Flask‑WTF (forms + CSRF)
+- Flask‑SQLAlchemy (ORM)
+- Flask‑Migrate
+- Flask‑CORS
+- Optional: OpenAI, gTTS, pygame
+  
 
-- Python  
-- Flask web framework  
-- HTML & Jinja2 templating  
+## Project Structure (simplified)
 
-## Screenshots
+```
+DAYSAVVY/
+├─ app.py
+├─ templates/
+│  ├─ index.html
+│  ├─ login.html
+│  └─ register.html
+├─ static/
+│  ├─ favicon.ico            (recommended) OR
+│  └─ favicon_ico/favicon-32x32.png
+├─ DAYSAVVY.db               (created at runtime; SQLite)
+└─ README.md
+```
 
-![Homepage](Images/Home.png)
+## Security & Privacy
+
+- CSRF‑protected forms, session security
+- SQLite local by default; bring your own DB via DATABASE_URL
+- Report issues: arhammaliksg@gmail.com
 
 
 ## How to Run Locally
