@@ -14,9 +14,10 @@ from flask import (
     jsonify, session, send_from_directory
 )
 from flask_wtf import FlaskForm, CSRFProtect
-from wtforms import StringField, DateField, SelectField, TimeField, SubmitField
-from wtforms.validators import DataRequired, Optional as WTOptional
+from wtforms import StringField, DateField, SelectField, TimeField, SubmitField, PasswordField
+from wtforms.validators import DataRequired, Optional as WTOptional, Length
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.exc import IntegrityError
 from flask_migrate import Migrate
 from flask_cors import CORS
 
@@ -129,10 +130,23 @@ class User(db.Model):
 def register():
     form = RegisterForm()
     if form.validate_on_submit():
+        username = form.username.data.strip()
+        # Case-insensitive duplicate check
+        existing = User.query.filter(db.func.lower(User.username) == username.lower()).first()
+        if existing:
+            flash("Username already taken. Please choose another.", "warning")
+            return render_template("register.html", form=form)
+        
         hashed_pw = generate_password_hash(form.password.data)
-        user = User(username=form.username.data, password=hashed_pw)
+        user = User(username=username, password=hashed_pw)
         db.session.add(user)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash("Username already exists. Please choose another.", "warning")
+            return render_template("register.html", form=form)
+
         flash("Registration successful! Please log in.", "success")
         return redirect(url_for("login"))
     return render_template("register.html", form=form)
@@ -141,7 +155,8 @@ def register():
 def login():
     form = LoginForm()
     if form.validate_on_submit():
-        user = User.query.filter_by(username=form.username.data).first()
+        username = form.username.data.strip()
+        user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, form.password.data):
             session["user_id"] = user.id
             flash("Logged in successfully!", "success")
@@ -164,13 +179,13 @@ def inject_current_user():
 
 # Forms
 class RegisterForm(FlaskForm):
-    username = StringField('Username', validators=[DataRequired()])
-    password = StringField('Password', validators=[DataRequired()])
+    username = StringField('Username', validators=[DataRequired(), Length(min=3, max=80)])
+    password = PasswordField('Password', validators=[DataRequired(), Length(min=8, message="Use 8+ characters")])
     submit = SubmitField('Register')
 
 class LoginForm(FlaskForm):
     username = StringField('Username', validators=[DataRequired()])
-    password = StringField('Password', validators=[DataRequired()])
+    password = PasswordField('Password', validators=[DataRequired()])
     submit = SubmitField('Login')
 
 class TaskForm(FlaskForm):
