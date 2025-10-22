@@ -234,26 +234,28 @@
 
     <!-- Add Task form -->
     <div class="card mb-4">
-      <div class="card-header">Add Task</div>
-      <div class="card-body">
-        <form method="POST" action="{{ url_for('index') }}" class="row g-2">
-          {{ form.csrf_token }}
-          <div class="col-md-6">
-            {{ form.task(class="form-control", placeholder="Task name") }}
-          </div>
-          <div class="col-md-3">
-            {{ form.due_date(class="form-control", placeholder="YYYY-MM-DD") }}
-          </div>
-          <div class="mb-3">
-        <label for="task_time" class="form-label">Time:</label>
-        <input type="time" name="task_time" id="task_time" class="form-control">
-    </div>
-          <div class="col-md-2">
-            {{ form.category(class="form-select") }}
-          </div>
-          <div class="col-md-1 d-grid">
-            <button type="submit" class="btn btn-primary">Add</button>
-          </div>
+  <div class="card-header">Add Task</div>
+  <div class="card-body">
+    <form method="POST" action="{{ url_for('index') }}" class="row g-2">
+      {{ form.csrf_token }}
+      <div class="col-12">
+        {{ form.task(class="form-control", placeholder="Task or goal (e.g., Prepare for my midterm exam)") }}
+      </div>
+      <div class="col-md-3">
+        {{ form.due_date(class="form-control", placeholder="YYYY-MM-DD") }}
+      </div>
+      <div class="col-md-2">
+        <input type="time" name="task_time" id="task_time" class="form-control" />
+      </div>
+      <div class="col-md-3">
+        {{ form.category(class="form-select") }}
+      </div>
+      <div class="col-md-2 d-grid">
+        <button type="submit" class="btn btn-primary">Add</button>
+      </div>
+      <div class="col-md-2 d-grid">
+        <button type="button" id="decomposeBtn" class="btn btn-outline-primary">Decompose</button>
+      </div>
         </form>
       </div>
     </div>
@@ -432,6 +434,70 @@ function stopVoiceControl() {
     document.getElementById('stopBtn').style.display = 'none';
     document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
 }
+</script>
+
+<!-- Decompose Task Modal -->
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('decomposeBtn');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    const goalEl = document.querySelector('input[name="task"]');
+    const dueEl  = document.querySelector('input[name="due_date"]');
+    const timeEl = document.getElementById('task_time');
+
+    let goal = goalEl?.value?.trim();
+    let due  = dueEl?.value || '';
+    let time = timeEl?.value || '';
+
+    if (!goal) { alert('Enter a goal in the Task field first.'); return; }
+
+    if (!window.csrfToken) {
+      window.csrfToken = await fetch('/csrf-token', {credentials:'same-origin'})
+        .then(r=>r.json()).then(j=>j.csrf_token);
+    }
+
+    // Ask for missing inputs so users don’t get “same time” everywhere
+    if (!due) {
+      const d = prompt('Final due date for the goal? (YYYY-MM-DD) Optional. Leave blank to spread across next days.');
+      if (d !== null) due = d.trim();
+    }
+    if (!time) {
+      const t = prompt('Default time for subtasks? (HH:MM) Optional. Leave blank to stagger times automatically.');
+      if (t !== null) time = t.trim();
+    }
+
+    if (!window.csrfToken) {
+      window.csrfToken = await fetch('/csrf-token', {credentials:'same-origin'})
+        .then(r=>r.json()).then(j=>j.csrf_token);
+    }
+
+    // Preview
+    const preview = await fetch('/api/tasks/decompose', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken': window.csrfToken},
+      credentials: 'same-origin',
+      body: JSON.stringify({ goal, due_date: due || undefined, task_time: time || undefined })
+    }).then(r=>r.json());
+
+    const list = (preview.subtasks || [])
+      .map(s => `• ${s.name}${s.suggested_due_date ? ` — ${s.suggested_due_date}` : ''}`)
+      .join('\n') || '(no suggestions)';
+    if (!confirm(`Create these subtasks?\n\n${list}`)) return;
+
+    // Create
+    const created = await fetch('/api/tasks/decompose', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken': window.csrfToken},
+      credentials: 'same-origin',
+      body: JSON.stringify({ goal, due_date: due || undefined, task_time: time || undefined, create: true })
+    }).then(r=>r.json());
+
+    if (created.created) location.reload();
+    else alert('Could not create subtasks.');
+  });
+});
 </script>
 
 <!-- Add Material Icons -->

@@ -352,18 +352,31 @@ def speak_text_nonblocking(text: str):
 # Smart Task Decomposition
 def _evenly_spaced_dates(final_due: Optional[date], n: int) -> list[Optional[date]]:
     """Return n dates spaced from today to final_due (inclusive). None if no final due."""
-    if not final_due or n <= 0:
-        return [None] * max(n, 0)
+    if n <= 0:
+        return []
     today = date.today()
+    if not final_due:
+        return [today + timedelta(days=i) for i in range(n)]
     days = max(0, (final_due - today).days)
     if days == 0:
         return [final_due] * n
     slots = []
     for i in range(n):
-        # spread in [0, days], inclusive
         pos = round(i * (days / max(1, n - 1)))
         slots.append(today + timedelta(days=pos))
     return slots
+
+def _stagger_times(base: Optional[dt_time], n: int) -> list[Optional[dt_time]]:
+    """
+    Return n times. If base is provided, stagger hour +i.
+    If no base, cycle through sensible slots (10:00, 14:00, 18:00).
+    """
+    if n <= 0:
+        return []
+    if base:
+        return [dt_time((base.hour + i) % 24, base.minute) for i in range(n)]
+    slots = [dt_time(10, 0), dt_time(14, 0), dt_time(18, 0)]
+    return [slots[i % len(slots)] for i in range(n)]
 
 def decompose_goal_text(goal_text: str) -> list[Dict[str, Any]]:
     """
@@ -460,15 +473,17 @@ def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date
     db.session.flush()
     
     dates = _evenly_spaced_dates(final_due, len(subtasks))
+    times = _stagger_times(default_time, len(subtasks))
     created = []
     for idx, sub in enumerate(subtasks):
         sd = dates[idx] if idx < len(dates) else None
+        st_time = times[idx] if sd else None
         st = Task(
             user_id=uid,
             name=normalize_task_name(sub["name"]),
             category=category,
             due_date=sd,
-            task_time=default_time if sd else None,
+            task_time=st_time,
             priority=classify_priority(sub["name"]),
             reminder_time=(datetime.combine(sd, default_time) if (sd and default_time) else None),
             parent_id=parent.id,
