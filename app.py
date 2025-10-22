@@ -4,6 +4,7 @@ import re
 import io
 import json
 import threading
+import math
 from datetime import datetime, date, timedelta, time as dt_time
 from typing import Optional, Dict, Any, Tuple
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -20,6 +21,7 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.exc import IntegrityError
 from flask_migrate import Migrate
 from flask_cors import CORS
+from sqlalchemy.exc import IntegrityError
 
 # Optional libs 
 try:
@@ -92,18 +94,6 @@ SESSION_CONV_KEY = 'conversation_state'
 
 # Models
 class Task(db.Model):
-    """
-    Persistent Task model.
-    We unify fields to avoid mismatch between different versions of the model in your pasted code.
-    Fields:
-      - id (int PK)
-      - name (string): task name
-      - due_date (date): optional due date
-      - task_time (time): optional time of day
-      - category (string): e.g., Work, Personal, Study, Other
-      - completed (bool)
-      - created_at (datetime)
-    """
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     name = db.Column(db.String(300), nullable=False)
@@ -114,6 +104,9 @@ class Task(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     priority = db.Column(db.String(20), default='Normal')
     reminder_time = db.Column(db.DateTime, nullable=True)
+    parent_id = db.Column(db.Integer, db.ForeignKey('task.id'), nullable=True)
+    order_index = db.Column(db.Integer, nullable=True)
+    subtasks = db.relationship('Task', backref=db.backref('parent', remote_side=[id]), lazy=True)
     
     def __repr__(self):
         return f"<Task id={self.id} name={self.name!r} completed={self.completed}>"
@@ -125,6 +118,13 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
 
+# NEW: simple emotion log (no schema break to existing tables)
+class EmotionEvent(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    emotion = db.Column(db.String(32), nullable=False)  
+    score = db.Column(db.Float, default=0.0)            
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
@@ -212,6 +212,9 @@ def task_to_dict(t: Task) -> Dict[str, Any]:
         "priority": t.priority,
         "reminder_time": t.reminder_time.isoformat() if t.reminder_time else None,
         "user_id": t.user_id,
+        "parent_id": t.parent_id,
+        "order_index": t.order_index,
+        "has_subtasks": bool(t.subtasks),
     }
 
 def parse_time_from_text(text: str) -> Optional[dt_time]:
@@ -346,6 +349,206 @@ def speak_text_nonblocking(text: str):
 
     threading.Thread(target=_play, daemon=True).start()
 
+# Smart Task Decomposition
+def _evenly_spaced_dates(final_due: Optional[date], n: int) -> list[Optional[date]]:
+    """Return n dates spaced from today to final_due (inclusive). None if no final due."""
+    if not final_due or n <= 0:
+        return [None] * max(n, 0)
+    today = date.today()
+    days = max(0, (final_due - today).days)
+    if days == 0:
+        return [final_due] * n
+    slots = []
+    for i in range(n):
+        # spread in [0, days], inclusive
+        pos = round(i * (days / max(1, n - 1)))
+        slots.append(today + timedelta(days=pos))
+    return slots
+
+def decompose_goal_text(goal_text: str) -> list[Dict[str, Any]]:
+    """
+    Return a list of subtasks: [{name, category?}]
+    Uses OpenAI (if configured) else a compact local fallback.
+    """
+    text = (goal_text or "").strip()
+    if not text:
+        return []
+
+    # Try OpenAI JSON plan
+    if openai and os.getenv("OPENAI_API_KEY"):
+        try:
+            prompt = (
+                "Break the user's goal into a small, actionable checklist of 3-7 subtasks. "
+                "Return JSON only: {\"subtasks\":[{\"name\":\"...\"}, ...]}. "
+                f"Goal: {text}"
+            )
+            resp = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=200,
+                temperature=0.4,
+            )
+            content = resp.choices[0].message.content.strip()
+            data = json.loads(content)
+            subs = data.get("subtasks", [])
+            out = []
+            for s in subs:
+                name = (s.get("name") or "").strip()
+                if name:
+                    out.append({"name": name})
+            if out:
+                return out
+        except Exception:
+            pass
+
+        # Fallback rules
+    t = text.lower()
+    if "exam" in t or "midterm" in t or "test" in t:
+        return [
+            {"name": "Outline exam topics"},
+            {"name": "Revise chapters 1–5"},
+            {"name": "Make formula/definition sheet"},
+            {"name": "Solve last year’s paper"},
+            {"name": "Review mistakes and weak areas"},
+        ]
+    if "presentation" in t or "deck" in t or "slides" in t:
+        return [
+            {"name": "Define key message and outline"},
+            {"name": "Draft slides"},
+            {"name": "Design visuals and charts"},
+            {"name": "Add speaker notes"},
+            {"name": "Rehearse twice"},
+        ]
+    if "trip" in t or "travel" in t:
+        return [
+            {"name": "Set dates and budget"},
+            {"name": "Book flights/trains"},
+            {"name": "Reserve hotel"},
+            {"name": "Create itinerary"},
+            {"name": "Pack essentials checklist"},
+        ]
+    
+     # Generic scaffold
+    return [
+        {"name": "Clarify the goal and success criteria"},
+        {"name": "List required resources"},
+        {"name": "Draft a plan with milestones"},
+        {"name": "Execute first milestone"},
+        {"name": "Review and adjust next steps"},
+    ]
+
+def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date], default_time: Optional[dt_time], category: str = "Other") -> Dict[str, Any]:
+    """
+    Make a parent task (the goal) and child tasks (subtasks) with evenly spaced due dates.
+    Returns dict: {parent_id, count, children:[...]}
+    """
+    subtasks = decompose_goal_text(goal_text)
+    if not subtasks:
+        return {"parent_id": None, "count": 0, "children": []}
+
+# Create parent
+    parent = Task(
+        user_id=uid,
+        name=normalize_task_name(goal_text),
+        category=category,
+        due_date=final_due,
+        task_time=default_time,
+        priority=classify_priority(goal_text),
+        reminder_time=(datetime.combine(final_due, default_time) if (final_due and default_time) else None),
+    )
+    db.session.add(parent)
+    db.session.flush()
+    
+    dates = _evenly_spaced_dates(final_due, len(subtasks))
+    created = []
+    for idx, sub in enumerate(subtasks):
+        sd = dates[idx] if idx < len(dates) else None
+        st = Task(
+            user_id=uid,
+            name=normalize_task_name(sub["name"]),
+            category=category,
+            due_date=sd,
+            task_time=default_time if sd else None,
+            priority=classify_priority(sub["name"]),
+            reminder_time=(datetime.combine(sd, default_time) if (sd and default_time) else None),
+            parent_id=parent.id,
+            order_index=idx,
+        )
+        db.session.add(st)
+        created.append(st)
+
+        db.session.commit()
+    return {
+        "parent_id": parent.id,
+        "count": len(created),
+        "children": [task_to_dict(c) for c in created],
+        "parent": task_to_dict(parent),
+    }
+
+@app.route("/api/tasks/decompose", methods=["POST"])
+def api_decompose_goal():
+    """
+    Body JSON:
+      {
+        "goal": "Prepare for my midterm exam",
+        "due_date": "YYYY-MM-DD",        # optional
+        "task_time": "HH:MM",            # optional (applied to all)
+        "category": "Study",             # optional
+        "create": true                   # if true, write to DB
+      }
+    Returns subtasks (preview) or created tasks.
+    """
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    goal_text = (data.get("goal") or "").strip()
+    if not goal_text:
+        return jsonify({"error": "Goal text is required"}), 400
+
+# Parse optional final due and time
+    final_due = None
+    if data.get("due_date"):
+        try:
+            final_due = datetime.strptime(data["due_date"], "%Y-%m-%d").date()
+        except Exception:
+            final_due = None
+
+    default_time = None
+    if data.get("task_time"):
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                default_time = datetime.strptime(data["task_time"], fmt).time()
+                break
+            except Exception:
+                pass
+
+    category = (data.get("category") or "Other").strip().title()
+
+    if data.get("create"):
+        result = create_goal_with_subtasks(uid, goal_text, final_due, default_time, category)
+        return jsonify({
+            "created": True,
+            "parent": result.get("parent"),
+            "subtasks": result.get("children"),
+            "count": result.get("count", 0)
+        }), 201
+    # Preview only
+    preview = decompose_goal_text(goal_text)
+    # Attach suggested schedule if due provided
+    dates = _evenly_spaced_dates(final_due, len(preview)) if final_due else [None]*len(preview)
+    out = []
+    for idx, sub in enumerate(preview):
+        d = dates[idx] if idx < len(dates) else None
+        out.append({
+            "name": sub["name"],
+            "suggested_due_date": d.strftime("%Y-%m-%d") if d else None,
+            "category": category,
+            "order_index": idx
+        })
+    return jsonify({"created": False, "goal": goal_text, "subtasks": out})
+
 # Web UI Routes (Flask)
 @app.after_request
 def add_no_cache_headers(response):
@@ -419,10 +622,11 @@ def index():
 
 @app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
+    if "user_id" not in session: return redirect(url_for("login"))
+    task = Task.query.filter_by(id=task_id, user_id=session["user_id"]).first_or_404()
     """
     Edit an existing task via web form; pre-populates fields.
     """
-    task = Task.query.get_or_404(task_id)
     form = TaskForm()
     if request.method == "POST" and form.validate_on_submit():  
         task.name = normalize_task_name(form.task.data)
@@ -443,10 +647,11 @@ def edit_task(task_id):
 
 @app.route("/delete/<int:task_id>", methods=["POST"])
 def delete_task(task_id):
+    if "user_id" not in session: return redirect(url_for("login"))
+    task = Task.query.filter_by(id=task_id, user_id=session["user_id"]).first_or_404()
     """
     Delete task by id (form POST)
     """
-    task = Task.query.get_or_404(task_id)
     db.session.delete(task)
     db.session.commit()
     flash("Task deleted!", "warning")
@@ -454,10 +659,11 @@ def delete_task(task_id):
 
 @app.route("/complete/<int:task_id>", methods=["POST"])
 def complete_task(task_id):
+    if "user_id" not in session: return redirect(url_for("login"))
+    task = Task.query.filter_by(id=task_id, user_id=session["user_id"]).first_or_404()
     """
     Mark a task as completed.
     """
-    task = Task.query.get_or_404(task_id)
     task.completed = True
     db.session.commit()
     flash("Task marked as completed!", "success")
@@ -483,12 +689,12 @@ def api_add_task():
         return jsonify({"error": "Task name is required"}), 400
 
     due_date = None
+    task_time = None
     if data.get("due_date"):
         try:
             due_date = datetime.strptime(data["due_date"], "%Y-%m-%d").date()
         except Exception:
             due_date = None
-        task_time = None
     if data.get("task_time"):
         for fmt in ("%H:%M:%S", "%H:%M"):
             try:
@@ -758,6 +964,30 @@ def voice_command():
         data = request.get_json(force=True, silent=True) or {}
         transcript = (data.get("transcript") or "").strip()
         tl = transcript.lower()
+        uid = session.get("user_id")
+
+        # Emotion detection and proactive help (if not already in a flow)
+        emotion, emo_score = detect_emotion(transcript)
+        if uid:
+            log_emotion(uid, emotion, emo_score)
+            
+        # Offer help if negative and not already in a flow
+        if not _get_flow().get("mode") and emotion in {"stressed","sad","tired"} and uid:
+            todays = propose_reschedule_candidates(uid)
+            if todays:
+                flow = {"mode":"reschedule_offer","step":"confirm","payload":{"days":1}}
+                _save_flow(flow)
+                prefix = empathetic_prefix(emotion)
+                return jsonify({
+                    "message": f"{prefix} Want me to move today’s {len(todays)} task(s) to tomorrow?",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            
+        flow = _get_flow()
+        mode = flow.get("mode")
+        step = flow.get("step")
+        task = flow.get("task") or {}
 
         # Basic guard
         if not transcript:
@@ -877,18 +1107,80 @@ def voice_command():
                       "reload_page": True,
                       "new_task": new_task_data
              })
-
-        # DELETE / REMOVE 
-        if "delete" in tl or "remove" in tl:
-            keyword = "delete" if "delete" in tl else "remove"
-            name = tl.split(keyword, 1)[1].strip() if keyword in tl else ""
-            if not name:
+            
+        # RESCHEDULE OFFER FLOW
+        def propose_reschedule_candidates(uid: int):
+                """Return list of today's due, incomplete tasks for this user."""
+                today = date.today()
+                return Task.query.filter(
+                    Task.user_id == uid,
+                    Task.completed == False,
+                    Task.due_date == today
+                ).order_by(
+                    (Task.task_time.is_(None)).asc(),  # non-null first
+                    Task.task_time.asc(),
+                    Task.id.asc()
+                ).all()
+        if mode == "reschedule_offer" and step == "confirm" and uid:
+            if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay")):
+                days = int(flow.get("payload",{}).get("days",1))
+                moved = apply_reschedule(uid, days=days)
+                _clear_flow()
+                if moved:
+                    return jsonify({
+                        "message": f"Done. I moved {moved} task(s) to tomorrow. Anything else?",
+                        "continue_listening": True,
+                        "task_added": False,
+                        "reload_page": True
+                    })
+                else:
+                    return jsonify({
+                        "message": "Looks like there are no tasks due today to move.",
+                        "continue_listening": True,
+                        "task_added": False
+                    })
+            elif any(w in tl for w in ("no","nah","nope","cancel")):
+                _clear_flow()
                 return jsonify({
-                    "message": "Which task should I delete?",
+                    "message": "Okay. I’m here if you need anything.",
                     "continue_listening": True,
                     "task_added": False
                 })
-            candidate = Task.query.filter(Task.name.ilike(f"%{name}%")).first()
+            else:
+                return jsonify({
+                    "message": "Should I move today’s tasks to tomorrow? Say yes or no.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+          # DIRECT RESCHEDULE INTENT (e.g., “reschedule/postpone today’s tasks”)
+        if any(k in tl for k in ("reschedule","postpone","move tasks")) and uid:
+            moved = apply_reschedule(uid, days=1)
+            _clear_flow()
+            if moved:
+                return jsonify({
+                    "message": f"I moved {moved} task(s) to tomorrow. Want anything else?",
+                    "continue_listening": True,
+                    "task_added": False,
+                    "reload_page": True
+                })
+            else:
+                return jsonify({
+                    "message": "No tasks due today to move.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+
+        # DELETE / REMOVE 
+        if "delete" in tl or "remove" in tl:
+            if not uid:
+                return jsonify({"message": "Please log in first.", "continue_listening": False, "task_added": False})
+            keyword = "delete" if "delete" in tl else "remove"
+            name = tl.split(keyword, 1)[1].strip() if keyword in tl else ""
+            if not name:
+                return jsonify({"message": "Which task should I delete?", "continue_listening": True, "task_added": False})
+            candidate = Task.query.filter(Task.user_id == uid, Task.name.ilike(f"%{name}%")).first()
             if not candidate:
                 return jsonify({
                     "message": f"I couldn’t find '{name}'.",
@@ -908,6 +1200,8 @@ def voice_command():
 
         # COMPLETE
         if "complete" in tl or "finish" in tl or "done" in tl:
+            if not uid:
+                return jsonify({"message": "Please log in first.", "continue_listening": False, "task_added": False})
             name = ""
             for k in ("complete", "finish", "done"):
                 if k in tl:
@@ -1051,6 +1345,96 @@ class AIAssistant:
         speak_text_nonblocking(text)
 
 ai_assistant = AIAssistant()
+
+# Emotional Intelligence
+def detect_emotion(text: str) -> Tuple[str, float]:
+    """
+    Return (label, score) where label in {stressed, sad, tired, positive, neutral}.
+    Uses OpenAI if configured; otherwise a small lexicon fallback.
+    """
+    t = (text or "").lower().strip()
+    if not t:
+        return ("neutral", 0.0)
+    
+    # Try OpenAI classification if available
+    if openai and os.getenv("OPENAI_API_KEY"):
+        try:
+            prompt = (
+                "Classify the user's emotion into one of: stressed, sad, tired, positive, neutral. "
+                "Return JSON: {\"emotion\":\"...\",\"score\":0-1}. User: " + t
+            )
+            resp = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role":"user","content":prompt}],
+                max_tokens=60,
+                temperature=0.2,
+            )
+            content = resp.choices[0].message.content.strip()
+            data = json.loads(content)
+            emo = str(data.get("emotion","neutral")).lower()
+            score = float(data.get("score", 0.6))
+            if emo not in {"stressed","sad","tired","positive","neutral"}:
+                emo = "neutral"
+            return (emo, max(0.0, min(score, 1.0)))
+        except Exception:
+            pass
+ # Fallback lexicon
+    NEG_STRESS = {"overwhelmed","stress","stressed","anxious","panic","pressure","burnout","burned out","busy","too much"}
+    NEG_SAD    = {"sad","down","upset","depressed","cry","lonely","hurt","bad day"}
+    NEG_TIRED  = {"tired","exhausted","fatigued","sleepy","drained","worn out","not well","sick","headache"}
+    POSITIVE   = {"great","good","awesome","amazing","excited","happy","fantastic","love"}
+    score = 0.0
+    if any(w in t for w in NEG_STRESS): return ("stressed", 0.8)
+    if any(w in t for w in NEG_SAD):    return ("sad", 0.8)
+    if any(w in t for w in NEG_TIRED):  return ("tired", 0.8)
+    if any(w in t for w in POSITIVE):   return ("positive", 0.7)
+    return ("neutral", 0.5)
+
+def log_emotion(user_id: Optional[int], emotion: str, score: float) -> None:
+    try:
+        ev = EmotionEvent(user_id=user_id, emotion=emotion, score=score)
+        db.session.add(ev)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print("[EmotionLog] failed:", e)
+
+def propose_reschedule_candidates(uid: int):
+    """Return list of today's due, incomplete tasks for this user."""
+    today = date.today()
+    return Task.query.filter(
+        Task.user_id == uid,
+        Task.completed == False,
+        Task.due_date == today
+    ).order_by(Task.task_time.asc().nullsLast(), Task.id.asc()).all()
+
+def apply_reschedule(uid: int, days: int = 1) -> int:
+    """Shift today's due, incomplete tasks by N days. Recompute reminder_time."""
+    candidates = propose_reschedule_candidates(uid)
+    moved = 0
+    for t in candidates:
+        try:
+            new_due = t.due_date + timedelta(days=days) if t.due_date else None
+            t.due_date = new_due
+            if new_due and t.task_time:
+                t.reminder_time = datetime.combine(new_due, t.task_time)
+            else:
+                t.reminder_time = None
+            moved += 1
+        except Exception:
+            continue
+    if moved:
+        db.session.commit()
+    return moved
+
+def empathetic_prefix(emotion: str) -> str:
+    return {
+        "stressed": "You sound a bit stressed.",
+        "sad": "I’m picking up that you’re feeling low.",
+        "tired": "You seem tired.",
+        "positive": "Love the energy!",
+        "neutral": ""
+    }.get(emotion, "")
 
 # Favicon / Tab icon
 @app.route('/favicon.ico')
