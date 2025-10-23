@@ -293,15 +293,32 @@ function speakText(text, callback=null) {
         if (callback) callback();
         return;
     }
-    const utter = new SpeechSynthesisUtterance(text);
+    const utter = new SpeechSynthesisUtterance(text || "");
     utter.lang = 'en-US';
-    utter.rate = 1;   
-    utter.pitch = 1;  
-    utter.onend = () => {
+    utter.rate = 1;
+    utter.pitch = 1;
+
+    let finished = false;
+    const finish = () => {
+        if (finished) return;
+        finished = true;
         if (callback) callback();
     };
-    window.speechSynthesis.cancel(); 
-    window.speechSynthesis.speak(utter);
+    utter.onend = finish;
+    utter.onerror = finish;
+
+    // Fallback timer: call finish even if onend never fires
+    // ~40ms per character, clamped 1.5s–4s
+    const ms = Math.min(4000, Math.max(1500, (text || "").length * 40));
+    const timer = setTimeout(finish, ms);
+
+    // If finish fires, clear fallback timer
+    const clear = () => { try { clearTimeout(timer); } catch(_){} };
+    utter.onend = () => { clear(); finish(); };
+    utter.onerror = () => { clear(); finish(); };
+
+    try { window.speechSynthesis.cancel(); } catch(_) {}
+    try { window.speechSynthesis.speak(utter); } catch(_) { finish(); }
 }
 
 // Start voice control

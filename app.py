@@ -458,7 +458,7 @@ def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date
     subtasks = decompose_goal_text(goal_text)
     if not subtasks:
         return {"parent_id": None, "count": 0, "children": []}
-
+    
 # Create parent
     parent = Task(
         user_id=uid,
@@ -485,14 +485,14 @@ def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date
             due_date=sd,
             task_time=st_time,
             priority=classify_priority(sub["name"]),
-            reminder_time=(datetime.combine(sd, default_time) if (sd and default_time) else None),
+            reminder_time=(datetime.combine(sd, st_time) if (sd and st_time) else None),  # use st_time
             parent_id=parent.id,
             order_index=idx,
         )
         db.session.add(st)
         created.append(st)
 
-        db.session.commit()
+    db.session.commit()  # move commit here (after loop)
     return {
         "parent_id": parent.id,
         "count": len(created),
@@ -921,6 +921,37 @@ def parse_due_date(text: str):
 
     return None
 
+# Voice helpers for decomposition
+def _extract_goal_from_transcript(tl: str) -> Optional[str]:
+    """
+    Try to extract a goal after phrases like:
+    'break this down ...', 'break down ...', 'decompose ...',
+    'make subtasks for ...', 'split into tasks ...', 'plan for ...'
+    """
+    tl = tl.strip()
+    patterns = [
+        r'\bbreak\s+(?:this|it)?\s*down\s*(.+)$',
+        r'\bdecompose\s+(.+)$',
+        r'\bmake\s+subtasks\s+(?:for\s+)?(.+)$',
+        r'\bsplit\s+(?:this|it)?\s*(?:into\s+tasks\s*)?(.+)$',
+        r'\bplan\s+(?:for\s+)?(.+)$',
+        r'\bprepare\s+plan\s+(?:for\s+)?(.+)$',
+    ]
+    for p in patterns:
+        m = re.search(p, tl)
+        if m:
+            goal = m.group(1).strip(" .")
+            if goal:
+                return goal
+    return None
+
+def _recent_goal_candidate(uid: int) -> Optional[Task]:
+    # Prefer most recent top-level task (no parent), incomplete
+    return Task.query.filter(
+        Task.user_id == uid,
+        Task.parent_id.is_(None)
+    ).order_by(Task.created_at.desc()).first()
+
 def parse_task_time(text: str):
     """Return datetime.time or None. Accepts '5 pm', '17:30', '7:00 a.m.', 'noon'."""
     if not text:
@@ -1124,18 +1155,6 @@ def voice_command():
              })
             
         # RESCHEDULE OFFER FLOW
-        def propose_reschedule_candidates(uid: int):
-                """Return list of today's due, incomplete tasks for this user."""
-                today = date.today()
-                return Task.query.filter(
-                    Task.user_id == uid,
-                    Task.completed == False,
-                    Task.due_date == today
-                ).order_by(
-                    (Task.task_time.is_(None)).asc(),  # non-null first
-                    Task.task_time.asc(),
-                    Task.id.asc()
-                ).all()
         if mode == "reschedule_offer" and step == "confirm" and uid:
             if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay")):
                 days = int(flow.get("payload",{}).get("days",1))
@@ -1186,6 +1205,136 @@ def voice_command():
                     "task_added": False
                 })
 
+        # DECOMPOSE FLOW (Smart Task Decomposition)
+        if mode == "decompose" and uid:
+            # step: ask_goal -> capture goal
+            if step == "ask_goal":
+                goal = transcript.strip()
+                if not goal or goal in {"skip", "cancel"}:
+                    _clear_flow()
+                    return jsonify({
+                        "message": "Okay, cancelled.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+                flow["payload"] = {"goal": goal}
+                flow["step"] = "ask_due"
+                _save_flow(flow)
+                return jsonify({
+                    "message": "Got it. What’s the final due date? Say 'today', 'tomorrow', a date like '2025-11-05', or say 'skip'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # step: ask_due -> capture due date text (parse later)
+            if step == "ask_due":
+                flow.setdefault("payload", {})
+                flow["payload"]["due_text"] = None if "skip" in tl else transcript
+                flow["step"] = "ask_time"
+                _save_flow(flow)
+                return jsonify({
+                    "message": "What time should I target for these subtasks? Say a time like '5 pm', or say 'skip' to stagger automatically.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # step: ask_time -> preview and ask confirm
+            if step == "ask_time":
+                payload = flow.get("payload", {})
+                payload["time_text"] = None if "skip" in tl else transcript
+                goal = payload.get("goal", "")
+                # preview subtasks
+                preview = decompose_goal_text(goal)
+                names = [s["name"] for s in preview][:5]
+                more = "" if len(preview) <= 5 else f" and {len(preview)-5} more"
+                flow["payload"] = payload
+                flow["step"] = "confirm"
+                _save_flow(flow)
+                if not names:
+                    return jsonify({
+                        "message": "Couldn’t generate subtasks. Try rephrasing the goal.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+                return jsonify({
+                    "message": f"I suggest: {', '.join(names)}{more}. Should I create these?",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+
+            # step: confirm -> yes/no
+            if step == "confirm":
+                if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay","do it","confirm")):
+                    payload = flow.get("payload", {})
+                    goal = payload.get("goal", "")
+                    due = parse_due_date(payload.get("due_text") or "")
+                    ttm = parse_task_time(payload.get("time_text") or "")
+                    result = create_goal_with_subtasks(uid, goal, due, ttm, category="Other")
+                    _clear_flow()
+                    count = result.get("count", 0)
+                    if count:
+                        return jsonify({
+                            "message": f"Done. I created {count} subtasks for '{goal}'.",
+                            "continue_listening": False,   # stop listening to avoid “stuck”
+                            "task_added": True,            # signal success to UI
+                            "reload_page": True            # refresh to show new tasks
+                        })
+                    return jsonify({
+                        "message": "I couldn’t create the subtasks.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+                elif any(w in tl for w in ("no","nah","nope","cancel")):
+                    _clear_flow()
+                    return jsonify({
+                        "message": "Cancelled.",
+                        "continue_listening": False,
+                        "task_added": False
+                    })
+                else:
+                    return jsonify({
+                        "message": "Should I create these subtasks? Say yes or no.",
+                        "continue_listening": True,
+                        "task_added": False
+                    })
+
+
+        # DIRECT DECOMPOSE INTENT (no active flow)
+        if uid and any(k in tl for k in (
+            "break this down","break it down","break down","decompose",
+            "make subtasks","split into tasks","plan this","plan for"
+        )):
+            goal = _extract_goal_from_transcript(tl)
+            if not goal:
+                # Try most recent top-level task as the goal
+                recent = _recent_goal_candidate(uid)
+                if recent:
+                    # seed payload with recent's data
+                    flow = {"mode": "decompose", "step": "ask_time", "payload": {
+                        "goal": recent.name,
+                        "due_text": recent.due_date.strftime("%Y-%m-%d") if recent.due_date else None
+                    }}
+                    _save_flow(flow)
+                    return jsonify({
+                        "message": f"Breaking down '{recent.name}'. What time should I target, or say 'skip' to stagger automatically?",
+                        "continue_listening": True,
+                        "task_added": False
+                    })
+                # Ask user for the goal
+                _save_flow({"mode": "decompose", "step": "ask_goal", "payload": {}})
+                return jsonify({
+                    "message": "What goal would you like me to break down?",
+                    "continue_listening": True,
+                    "task_added": False
+                })
+            else:
+                # We have the goal from transcript; ask due date next
+                _save_flow({"mode": "decompose", "step": "ask_due", "payload": {"goal": goal}})
+                return jsonify({
+                    "message": f"Okay, breaking down '{goal}'. What’s the final due date? Say a date or 'skip'.",
+                    "continue_listening": True,
+                    "task_added": False
+                })
 
         # DELETE / REMOVE 
         if "delete" in tl or "remove" in tl:
@@ -1257,7 +1406,9 @@ def voice_command():
 
         # LIST 
         if "list" in tl or "show" in tl:
-            tasks = Task.query.order_by(Task.completed.asc(), Task.id.desc()).all()
+            if not uid:
+                return jsonify({"message": "Please log in first.", "continue_listening": False, "task_added": False})
+            tasks = Task.query.filter_by(user_id=uid).order_by(Task.completed.asc(), Task.id.desc()).all()
             if not tasks:
                 return jsonify({
                     "message": "You have no tasks.",
@@ -1421,8 +1572,11 @@ def propose_reschedule_candidates(uid: int):
         Task.user_id == uid,
         Task.completed == False,
         Task.due_date == today
-    ).order_by(Task.task_time.asc().nullsLast(), Task.id.asc()).all()
-
+   ).order_by(
+        (Task.task_time.is_(None)).asc(),  # non-null first (SQLite-safe)
+        Task.task_time.asc(),
+        Task.id.asc()
+    ).all()
 def apply_reschedule(uid: int, days: int = 1) -> int:
     """Shift today's due, incomplete tasks by N days. Recompute reminder_time."""
     candidates = propose_reschedule_candidates(uid)
