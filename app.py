@@ -419,7 +419,6 @@ def decompose_goal_text(goal_text: str) -> list[Dict[str, Any]]:
     if "exam" in t or "midterm" in t or "test" in t:
         return [
             {"name": "Outline exam topics"},
-            {"name": "Revise chapters 1–5"},
             {"name": "Make formula/definition sheet"},
             {"name": "Solve last year’s paper"},
             {"name": "Review mistakes and weak areas"},
@@ -624,16 +623,37 @@ def index():
     incomplete_tasks = [t for t in tasks_filtered if not t.completed]
     completed_tasks = [t for t in tasks_filtered if t.completed]
 
-    print(f"DEBUG: Total tasks: {len(tasks_filtered)}; incomplete: {len(incomplete_tasks)}; completed: {len(completed_tasks)}")
+ # Build parent -> subtasks mapping for hierarchical UI
+    parents = [t for t in tasks_filtered if t.parent_id is None]
+    children_map: Dict[int, list[Task]] = {}
     for t in tasks_filtered:
-        print(f"  Task {t.id}: {t.name} | completed={t.completed} | due={t.due_date} time={t.task_time} category={t.category}")
+        if t.parent_id:
+            children_map.setdefault(t.parent_id, []).append(t)
 
-    return render_template("index.html",
-                           form=form,
-                           tasks=tasks_filtered,
-                           incomplete_tasks=incomplete_tasks,
-                           completed_tasks=completed_tasks,
-                           current_date=date.today())
+# Sort subtasks: incomplete first, then order_index, then date/time, then id
+    for pid, lst in children_map.items():
+        lst.sort(key=lambda x: (
+            x.completed,  # False first
+            x.order_index if x.order_index is not None else 9999,
+            x.due_date or date.max,
+            x.task_time or dt_time(23, 59),
+            x.id
+        ))
+
+    parents_incomplete = [p for p in parents if not p.completed]
+    parents_completed  = [p for p in parents if p.completed]
+
+    return render_template(
+        "index.html",
+        form=form,
+        tasks=tasks_filtered,
+        incomplete_tasks=incomplete_tasks,
+        completed_tasks=completed_tasks,
+        parents_incomplete=parents_incomplete,
+        parents_completed=parents_completed,
+        children_map=children_map,
+        current_date=date.today()
+    )
 
 @app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
