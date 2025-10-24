@@ -449,27 +449,35 @@ def decompose_goal_text(goal_text: str) -> list[Dict[str, Any]]:
         {"name": "Review and adjust next steps"},
     ]
 
-def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date], default_time: Optional[dt_time], category: str = "Other") -> Dict[str, Any]:
-    """
-    Make a parent task (the goal) and child tasks (subtasks) with evenly spaced due dates.
-    Returns dict: {parent_id, count, children:[...]}
-    """
+def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date], default_time: Optional[dt_time],
+                              category: str = "Other", parent_id: Optional[int] = None) -> Dict[str, Any]:
     subtasks = decompose_goal_text(goal_text)
     if not subtasks:
         return {"parent_id": None, "count": 0, "children": []}
-    
+
 # Create parent
-    parent = Task(
-        user_id=uid,
-        name=normalize_task_name(goal_text),
-        category=category,
-        due_date=final_due,
-        task_time=default_time,
-        priority=classify_priority(goal_text),
-        reminder_time=(datetime.combine(final_due, default_time) if (final_due and default_time) else None),
-    )
-    db.session.add(parent)
-    db.session.flush()
+    parent = None
+    if parent_id:
+        parent = Task.query.filter_by(id=parent_id, user_id=uid).first()
+
+    if parent is None:
+        parent = Task(
+            user_id=uid,
+            name=normalize_task_name(goal_text),
+            category=category,
+            due_date=final_due,
+            task_time=default_time,
+            priority=classify_priority(goal_text),
+            reminder_time=(datetime.combine(final_due, default_time) if (final_due and default_time) else None),
+        )
+        db.session.add(parent)
+        db.session.flush()
+    else:
+        # Optional: update schedule if provided
+        if final_due and parent.due_date != final_due:
+            parent.due_date = final_due
+        if default_time and parent.task_time != default_time:
+            parent.task_time = default_time    
     
     dates = _evenly_spaced_dates(final_due, len(subtasks))
     times = _stagger_times(default_time, len(subtasks))
@@ -501,17 +509,6 @@ def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date
 
 @app.route("/api/tasks/decompose", methods=["POST"])
 def api_decompose_goal():
-    """
-    Body JSON:
-      {
-        "goal": "Prepare for my midterm exam",
-        "due_date": "YYYY-MM-DD",        # optional
-        "task_time": "HH:MM",            # optional (applied to all)
-        "category": "Study",             # optional
-        "create": true                   # if true, write to DB
-      }
-    Returns subtasks (preview) or created tasks.
-    """
     uid = session.get("user_id")
     if not uid:
         return jsonify({"error": "Unauthorized"}), 401
@@ -539,9 +536,17 @@ def api_decompose_goal():
                 pass
 
     category = (data.get("category") or "Other").strip().title()
+    # NEW: accept parent_id
+    parent_id = data.get("parent_id")
+    try:
+        parent_id = int(parent_id) if parent_id is not None else None
+    except Exception:
+        parent_id = None
 
     if data.get("create"):
-        result = create_goal_with_subtasks(uid, goal_text, final_due, default_time, category)
+        result = create_goal_with_subtasks(
+            uid, goal_text, final_due, default_time, category, parent_id=parent_id  # <- pass it
+        )
         return jsonify({
             "created": True,
             "parent": result.get("parent"),
@@ -682,11 +687,15 @@ def edit_task(task_id):
 
 @app.route("/delete/<int:task_id>", methods=["POST"])
 def delete_task(task_id):
-    if "user_id" not in session: return redirect(url_for("login"))
-    task = Task.query.filter_by(id=task_id, user_id=session["user_id"]).first_or_404()
-    """
-    Delete task by id (form POST)
-    """
+    if "user_id" not in session:
+        return redirect(url_for("login"))
+    uid = session["user_id"]
+
+    task = Task.query.filter_by(id=task_id, user_id=uid).first_or_404()
+
+    if task.parent_id is None:
+        Task.query.filter_by(user_id=uid, parent_id=task.id).delete(synchronize_session=False)
+
     db.session.delete(task)
     db.session.commit()
     flash("Task deleted!", "warning")
@@ -694,12 +703,17 @@ def delete_task(task_id):
 
 @app.route("/complete/<int:task_id>", methods=["POST"])
 def complete_task(task_id):
-    if "user_id" not in session: return redirect(url_for("login"))
-    task = Task.query.filter_by(id=task_id, user_id=session["user_id"]).first_or_404()
-    """
-    Mark a task as completed.
-    """
+    if "user_id" not in session:
+        return redirect(url_for("login"))
+    uid = session["user_id"]
+    task = Task.query.filter_by(id=task_id, user_id=uid).first_or_404()
+    # Mark parent and all its subtasks complete
     task.completed = True
+    if task.parent_id is None:
+        # it's a parent: mark children complete too
+        children = Task.query.filter_by(user_id=uid, parent_id=task.id).all()
+        for c in children:
+            c.completed = True
     db.session.commit()
     flash("Task marked as completed!", "success")
     return redirect(url_for("index"))

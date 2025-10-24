@@ -475,6 +475,24 @@ document.addEventListener('DOMContentLoaded', () => {
         .then(r=>r.json()).then(j=>j.csrf_token);
     }
 
+    // Try to find an existing parent card with the same name to avoid duplicates
+    let parentId = undefined;
+    const goalLower = goal.toLowerCase();
+    document.querySelectorAll('button[onclick*="decomposeGoalFromBtn"][data-id][data-name]').forEach(b => {
+      if ((b.dataset.name || '').trim().toLowerCase() === goalLower) {
+        parentId = parseInt(b.dataset.id, 10);
+      }
+    });
+
+    if (!due) {
+      const d = prompt('Final due date for the goal? (YYYY-MM-DD) Optional. Leave blank to spread across next days.');
+      if (d !== null) due = d.trim();
+    }
+    if (!time) {
+      const t = prompt('Default time for subtasks? (HH:MM) Optional. Leave blank to stagger times automatically.');
+      if (t !== null) time = t.trim();
+    }
+
     // Ask for missing inputs so users don’t get “same time” everywhere
     if (!due) {
       const d = prompt('Final due date for the goal? (YYYY-MM-DD) Optional. Leave blank to spread across next days.');
@@ -503,12 +521,18 @@ document.addEventListener('DOMContentLoaded', () => {
       .join('\n') || '(no suggestions)';
     if (!confirm(`Create these subtasks?\n\n${list}`)) return;
 
-    // Create
+    // Create (also send parent_id)
     const created = await fetch('/api/tasks/decompose', {
       method: 'POST',
       headers: {'Content-Type':'application/json','X-CSRFToken': window.csrfToken},
       credentials: 'same-origin',
-      body: JSON.stringify({ goal, due_date: due || undefined, task_time: time || undefined, create: true })
+      body: JSON.stringify({
+        parent_id: parentId,
+        goal,
+        due_date: due || undefined,
+        task_time: time || undefined,
+        create: true
+      })
     }).then(r=>r.json());
 
     if (created.created) location.reload();
@@ -516,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 </script>
-
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <!-- Add Material Icons -->
 <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
 
@@ -596,10 +620,11 @@ document.addEventListener('DOMContentLoaded', () => {
               <!-- Parent actions -->
 <div class="d-flex gap-2 mb-2">
   {% if not p.completed %}
-  <form method="POST" action="{{ url_for('complete_task', task_id=p.id) }}" class="m-0">
-    {{ form.csrf_token }}
-    <button type="submit" class="btn btn-success btn-sm rounded-pill">✅ Complete</button>
-  </form>
+  <form method="POST" action="{{ url_for('complete_task', task_id=p.id) }}" class="m-0"
+      onsubmit="return confirm('Mark this goal and all its subtasks as complete?');">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+  <button type="submit" class="btn btn-success btn-sm rounded-pill">✅ Complete</button>
+</form>
 
   <a href="{{ url_for('edit_task', task_id=p.id) }}" class="btn btn-warning btn-sm rounded-pill">✏️ Edit</a>
 
@@ -616,18 +641,54 @@ document.addEventListener('DOMContentLoaded', () => {
   </button>
   {% endif %}
 
-  <form method="POST" action="{{ url_for('delete_task', task_id=p.id) }}" class="m-0" onsubmit="return confirm('Delete parent and keep subtasks? (They will not be auto-deleted)')">
-    {{ form.csrf_token }}
-    <button type="submit" class="btn btn-danger btn-sm rounded-pill">🗑️ Delete</button>
-  </form>
+  <form method="POST" action="{{ url_for('delete_task', task_id=p.id) }}" class="m-0"
+      onsubmit="return confirm('Delete this goal and ALL its subtasks? This cannot be undone.');">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+  <button type="submit" class="btn btn-danger btn-sm rounded-pill">🗑️ Delete</button>
+</form>
 </div>
-              <script>
-function decomposeGoalFromBtn(btn) {
-  const id   = parseInt(btn.dataset.id, 10);
-  const name = btn.dataset.name || '';
-  const due  = btn.dataset.due  || undefined;
-  const time = btn.dataset.time || undefined;
-  decomposeGoalFromParent(id, name, due, time);
+<script>
+async function decomposeGoalFromParent(id, name, due, time) {
+  try {
+    const csrf = window.csrfToken || await fetch('/csrf-token', {credentials:'same-origin'})
+      .then(r=>r.json()).then(j=>j.csrf_token);
+
+    // Preview
+    const preview = await fetch('/api/tasks/decompose', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken': csrf},
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        parent_id: id,                  // attach to existing parent
+        goal: name,
+        due_date: due || undefined,
+        task_time: time || undefined
+      })
+    }).then(r=>r.json());
+     const list = (preview.subtasks || [])
+      .map(s => '• ' + s.name + (s.suggested_due_date ? ' — ' + s.suggested_due_date : ''))
+      .join('\n') || '(no suggestions)';
+    if (!confirm(`Create these subtasks under "${name}"?\n\n${list}`)) return;
+    // Create
+    const created = await fetch('/api/tasks/decompose', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken': csrf},
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        parent_id: id,                  // attach to existing parent
+        goal: name,
+        due_date: due || undefined,
+        task_time: time || undefined,
+        create: true
+      })
+    }).then(r=>r.json());
+
+    if (created.created) location.reload();
+    else alert('Could not create subtasks.');
+  } catch (e) {
+    console.error(e);
+    alert('Error decomposing this goal.');
+  }
 }
 </script>
 
@@ -645,13 +706,13 @@ function decomposeGoalFromBtn(btn) {
                       <div class="d-flex gap-2">
                         {% if not s.completed %}
                         <form method="POST" action="{{ url_for('complete_task', task_id=s.id) }}" class="m-0">
-                          {{ form.csrf_token }}
-                          <button type="submit" class="btn btn-success btn-sm rounded-pill">Done</button>
-                        </form>
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
+  <button type="submit" class="btn btn-success btn-sm rounded-pill">Done</button>
+</form>
                         {% endif %}
                         <a href="{{ url_for('edit_task', task_id=s.id) }}" class="btn btn-warning btn-sm rounded-pill">Edit</a>
                         <form method="POST" action="{{ url_for('delete_task', task_id=s.id) }}" class="m-0" onsubmit="return confirm('Delete this subtask?')">
-                          {{ form.csrf_token }}
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}" />
                           <button type="submit" class="btn btn-danger btn-sm rounded-pill">Delete</button>
                         </form>
                       </div>
@@ -699,12 +760,75 @@ async function decomposeGoalFromParent(id, name, due, time) {
 }
 </script>
 
+<script>
+// Make CSRF available globally too
+if (window.csrfToken == null) {
+  fetch('/csrf-token', {credentials: 'same-origin'})
+    .then(r => r.json())
+    .then(j => { window.csrfToken = j.csrf_token; });
+}
+
+// Bridge: reads data-* from the button
+function decomposeGoalFromBtn(btn) {
+  const id   = parseInt(btn.dataset.id, 10);
+  const name = btn.dataset.name || '';
+  const due  = btn.dataset.due  || undefined;
+  const time = btn.dataset.time || undefined;
+  decomposeGoalFromParent(id, name, due, time);
+}
+
+// Single global function: preview → confirm → create (attaches to existing parent)
+async function decomposeGoalFromParent(id, name, due, time) {
+  try {
+    const csrf = window.csrfToken || await fetch('/csrf-token', {credentials:'same-origin'})
+      .then(r=>r.json()).then(j=>j.csrf_token);
+
+    // Preview
+    const preview = await fetch('/api/tasks/decompose', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken': csrf},
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        parent_id: id,         // attach to existing parent (prevents duplicate)
+        goal: name,
+        due_date: due || undefined,
+        task_time: time || undefined
+      })
+    }).then(r=>r.json());
+
+    const list = (preview.subtasks || [])
+      .map(s => '• ' + s.name + (s.suggested_due_date ? ' — ' + s.suggested_due_date : ''))
+      .join('\n') || '(no suggestions)';
+    if (!confirm(`Create these subtasks under "${name}"?\n\n${list}`)) return;
+
+    // Create
+    const created = await fetch('/api/tasks/decompose', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json','X-CSRFToken': csrf},
+      credentials: 'same-origin',
+      body: JSON.stringify({
+        parent_id: id,         // attach to existing parent (prevents duplicate)
+        goal: name,
+        due_date: due || undefined,
+        task_time: time || undefined,
+        create: true
+      })
+    }).then(r=>r.json());
+
+    if (created.created) location.reload();
+    else alert('Could not create subtasks.');
+  } catch (e) {
+    console.error(e);
+    alert('Error decomposing this goal.');
+  }
+}
+</script>
+
   <!-- Copyright -->
-<body class="dark-mode">
-  <div class="footer">
-    &copy; 2025 Arham Malik. All rights reserved. | <a href="https://mail.google.com/mail/u/0/#inbox?compose=CllgCKCFTDJnNtRKbQmlxLmsBNLPgDcMbtVRzfLgbFPtfFHcMQNXpHJMWBmBSXTRNHqQHFGvkVV">Contact</a>
-  </div>
-</body>
+<div class="footer">
+  &copy; 2025 Arham Malik. All rights reserved. |
+  <a href="...">Contact</a>
+</div>
 
 <style>
 .footer {
