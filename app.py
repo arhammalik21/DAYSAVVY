@@ -848,7 +848,7 @@ import re
 @app.route("/voice/welcome", methods=["GET"])
 def voice_welcome():
     """
-    Returns a welcome message for the AI voice assistant.
+    Returns a welcome message for the EI voice assistant.
     """
     return jsonify({
         "message": "Welcome to DaySavvy! What would you like to do? You can say things like 'add a task', 'list my tasks', or 'complete a task'.",
@@ -1517,7 +1517,7 @@ class AIAssistant:
         Kept extremely defensive: if OpenAI is not set up, return a safe fallback.
         """
         if not openai or not self.api_key:
-            return {"action": "chat", "message": "AI assistant not configured."}
+            return {"action": "chat", "message": "EI assistant not configured."}
 
         try:
             tasks_summary = [f"ID {t.id}: {t.name}" for t in current_tasks if not t.completed]
@@ -1538,7 +1538,7 @@ class AIAssistant:
                 return {"action": "chat", "message": text}
         except Exception as e:
             print("[AIAssistant] OpenAI error:", e)
-            return {"action": "chat", "message": "Sorry, I couldn't get a response from AI."}
+            return {"action": "chat", "message": "Sorry, I couldn't get a response from EI."}
 
     def speak_response(self, text: str):
         """Optionally speak response using TTS (non-blocking)."""

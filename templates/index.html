@@ -107,7 +107,7 @@
     }
 
     /* Buttons and mic visuals kept */
-    .btn-ai-mic {
+    .btn-ei-mic {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border: none;
         color: white;
@@ -121,12 +121,12 @@
         gap: 8px;
     }
 
-    .btn-ai-mic:hover { transform: translateY(-3px); box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4); background: linear-gradient(135deg, #764ba2 0%, #667eea 100%); }
-    .btn-ai-mic:active { transform: translateY(-1px); }
-    .btn-ai-mic i { font-size: 20px; }
+    .btn-ei-mic:hover { transform: translateY(-3px); box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4); background: linear-gradient(135deg, #764ba2 0%, #667eea 100%); }
+    .btn-ei-mic:active { transform: translateY(-1px); }
+    .btn-ei-mic i { font-size: 20px; }
     .mic-text { font-size: 14px; letter-spacing: 0.5px; }
 
-    .btn-ai-mic.listening {
+    .btn-ei-mic.listening {
         background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
         animation: pulse 1s infinite;
     }
@@ -260,11 +260,11 @@
       </div>
     </div>
 
-<!-- AI voice command block -->
+<!-- EI voice command block -->
 <div class="mb-3">
-    <button id="voiceBtn" class="btn btn-ai-mic" onclick="startVoiceControl()" aria-label="Start voice">
+    <button id="voiceBtn" class="btn btn-ei-mic" onclick="startVoiceControl()" aria-label="Start voice">
         <i class="material-icons-outlined">mic</i>
-        <span class="mic-text">AI Voice</span>
+        <span class="mic-text">EI Voice</span>
     </button>
     <button id="stopBtn" class="btn btn-danger ms-2" onclick="stopVoiceControl()" style="display: none;" aria-label="Stop voice">
         <i class="material-icons-outlined">stop</i>
