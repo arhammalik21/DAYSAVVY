@@ -270,186 +270,171 @@
         <i class="material-icons-outlined">stop</i>
         Stop
     </button>
-    <div id="voiceStatus" class="mt-2 text-muted">Click Start Voice to begin</div>
-</div>
+    <div id="voiceStatus" class="mt-2 text-muted">🎙️ Click EI Voice to start</div>
 
-<!-- Voice Command -->
+
+<!-- NEW: Language + Voice -->
+    <select id="voiceLangSelect" class="form-select" style="width:140px">
+      <option value="hinglish">Hinglish</option>
+      <option value="en">English</option>
+      <option value="hi">हिंदी</option>
+    </select>
+    <select id="voiceGenderSelect" class="form-select" style="width:140px">
+      <option value="female">Female</option>
+      <option value="male">Male</option>
+    </select>
+  </div>
 <script>
-let isListening = false;
-let recognition = null;
-let csrfToken = null;
+// CSRF
+let isListening = false, recognition = null, csrfToken = null;
+fetch("/csrf-token").then(r=>r.json()).then(j=>{ csrfToken = j.csrf_token; });
 
-// Load CSRF token once
-fetch("/csrf-token")
-  .then(res => res.json())
-  .then(data => {
-      csrfToken = data.csrf_token;
-      console.log("CSRF loaded:", csrfToken);
+// Map app langs to STT/TTS codes
+function langToBCP47(v){
+  if (v === 'hi') return 'hi-IN';
+  if (v === 'en') return 'en-US';
+  return 'en-IN'; // hinglish default
+}
+// Server prefs load/save
+async function loadVoicePrefs(){
+  try {
+    const p = await fetch('/voice/prefs', {credentials:'same-origin'}).then(r=>r.json());
+    const langSel = document.getElementById('voiceLangSelect');
+    const genSel  = document.getElementById('voiceGenderSelect');
+    if (langSel) langSel.value = p.lang || 'hinglish';
+    if (genSel)  genSel.value  = p.gender || 'female';
+    window.voiceLang = langSel.value;
+    window.voiceLangCode = langToBCP47(window.voiceLang);
+    window.voiceGender = genSel.value;
+  } catch {}
+}
+async function saveVoicePrefs(delta){
+  await fetch('/voice/prefs', {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
+    credentials:'same-origin',
+    body: JSON.stringify(delta)
   });
+}
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadVoicePrefs();
+  const langSel = document.getElementById('voiceLangSelect');
+  const genSel  = document.getElementById('voiceGenderSelect');
+  langSel?.addEventListener('change', async () => {
+    window.voiceLang = langSel.value;
+    window.voiceLangCode = langToBCP47(window.voiceLang);
+    await saveVoicePrefs({ lang: window.voiceLang });
+    document.getElementById('voiceStatus').textContent = (window.voiceLang==='hi')
+      ? 'Ab main Hindi mein bolunga/bologi.'
+      : (window.voiceLang==='en' ? 'I will speak English now.' : 'Hinglish mode on.');
+  });
+  genSel?.addEventListener('change', async () => {
+    window.voiceGender = genSel.value;
+    await saveVoicePrefs({ gender: window.voiceGender });
+  });
+});
+// TTS: pick best browser voice by language + gender
+let voices = [];
+function refreshVoices(){ try{ voices = speechSynthesis.getVoices(); }catch{} }
+if ('speechSynthesis' in window){ speechSynthesis.onvoiceschanged = refreshVoices; refreshVoices(); }
 
-// Speak text using Web Speech API
-function speakText(text, callback=null) {
-    if (!('speechSynthesis' in window)) {
-        if (callback) callback();
-        return;
-    }
-    const utter = new SpeechSynthesisUtterance(text || "");
-    utter.lang = 'en-US';
-    utter.rate = 1;
-    utter.pitch = 1;
-
-    let finished = false;
-    const finish = () => {
-        if (finished) return;
-        finished = true;
-        if (callback) callback();
-    };
-    utter.onend = finish;
-    utter.onerror = finish;
-
-    // Fallback timer: call finish even if onend never fires
-    // ~40ms per character, clamped 1.5s–4s
-    const ms = Math.min(4000, Math.max(1500, (text || "").length * 40));
-    const timer = setTimeout(finish, ms);
-
-    // If finish fires, clear fallback timer
-    const clear = () => { try { clearTimeout(timer); } catch(_){} };
-    utter.onend = () => { clear(); finish(); };
-    utter.onerror = () => { clear(); finish(); };
-
-    try { window.speechSynthesis.cancel(); } catch(_) {}
-    try { window.speechSynthesis.speak(utter); } catch(_) { finish(); }
+function pickVoice(langCode, gender){
+  const lc = (langCode||'en-IN').toLowerCase();
+  const list = (voices||[]).filter(v => (v.lang||'').toLowerCase().startsWith(lc.split('-')[0]));
+  const maleHints = ['male','guy','arun','mukesh','madhur','adam','raj','man'];
+  const femaleHints = ['female','jenny','swara','asha','neural','woman','girl','zara','nita'];
+  const hints = (gender==='male') ? maleHints : femaleHints;
+  let best = list.find(v => hints.some(h => (v.name||'').toLowerCase().includes(h)));
+  if (!best) best = list.find(v => v.lang && v.lang.toLowerCase()===lc);
+  if (!best) best = list[0];
+  return best || null;
+}
+function speakText(text, cb=null){
+  if (!('speechSynthesis' in window)) { cb&&cb(); return; }
+  const u = new SpeechSynthesisUtterance(text || "");
+  u.lang = window.voiceLangCode || 'en-IN';
+  const v = pickVoice(u.lang, window.voiceGender || 'female');
+  if (v) u.voice = v;
+  u.rate = 1; u.pitch = 1;
+  const done = () => { try{cb&&cb();}catch{} };
+  u.onend = done; u.onerror = done;
+  try { speechSynthesis.cancel(); } catch(_){}
+  try { speechSynthesis.speak(u); } catch(_){ done(); }
 }
 
-// Start voice control
+// STT: use selected language
+function createRecognition(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const r = new SR();
+  r.continuous = false;
+  r.interimResults = false;
+  r.lang = window.voiceLangCode || 'en-IN';
+  return r;
+}
+// Start voice
 function startVoiceControl() {
-    if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-        document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
-        return;
-    }
+  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+    document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
+    return;
+  }
+  if (isListening) return;
+  isListening = true;
+  document.getElementById('voiceBtn').classList.add('listening');
+  document.getElementById('stopBtn').style.display = 'inline-block';
 
-    if (!csrfToken) {
-        document.getElementById('voiceStatus').textContent = '⚠️ CSRF token not ready. Retrying...';
-        setTimeout(startVoiceControl, 1000);
-        return;
-    }
-
-    if (isListening) return;
-    isListening = true;
-    document.getElementById('voiceBtn').classList.add('listening');
-    document.getElementById('stopBtn').style.display = 'inline-block';
-
-    // Fetch welcome message first
-    fetch("/voice/welcome")
-        .then(res => res.json())
-        .then(data => {
-            speakText(data.message, () => {
-                document.getElementById('voiceStatus').textContent = data.message;
-                if (data.continue_listening && isListening) {
-                    listenOnce();
-                } else {
-                    stopVoiceControl();
-                }
-            });
-        })
-        .catch(err => {
-            document.getElementById('voiceStatus').textContent = "❌ Error starting voice";
-            stopVoiceControl();
-        });
+  fetch("/voice/welcome")
+    .then(res => res.json())
+    .then(data => {
+      speakText(data.message, () => {
+        document.getElementById('voiceStatus').textContent = data.message;
+        if (data.continue_listening && isListening) listenOnce();
+        else stopVoiceControl();
+      });
+    })
+    .catch(() => { document.getElementById('voiceStatus').textContent = "❌ Error starting voice"; stopVoiceControl(); });
 }
-
-// Stop voice control
 function stopVoiceControl() {
-    isListening = false;
-    if (recognition) recognition.stop();
-    document.getElementById('voiceBtn').classList.remove('listening');
-    document.getElementById('stopBtn').style.display = 'none';
-    document.getElementById('voiceStatus').textContent = '🛑 Voice stopped';
+  isListening = false;
+  if (recognition) recognition.stop();
+  document.getElementById('voiceBtn').classList.remove('listening');
+  document.getElementById('stopBtn').style.display = 'none';
+  document.getElementById('voiceStatus').textContent = '🛑 Voice stopped';
 }
-
-// Listen for a single phrase
+// One turn listen
 function listenOnce() {
-    if (!isListening) return;
+  if (!isListening) return;
+  recognition = createRecognition();
+  if (!recognition) { document.getElementById('voiceStatus').textContent = '❌ Speech not available'; stopVoiceControl(); return; }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = false; 
-    recognition.lang = 'en-US';
+  recognition.onstart = () => { document.getElementById('voiceStatus').textContent = '🎤 Listening...'; };
+  recognition.onresult = (e) => {
+    const transcript = e.results[0][0].transcript.trim();
+    document.getElementById('voiceStatus').textContent = `⏳ Processing: "${transcript}"`;
+    recognition.stop();
 
-    recognition.onstart = () => {
-        document.getElementById('voiceStatus').textContent = '🎤 Listening...';
-    };
-
-    recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript.trim();
-        document.getElementById('voiceStatus').textContent = `⏳ Processing: "${transcript}"`;
-
-        recognition.stop();
-
-        // Send transcript to backend        
-        fetch("/voice/command", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "X-CSRFToken": csrfToken
-            },
-            body: JSON.stringify({ transcript })
-        })
-        .then(res => res.json())
-        .then(data => {
-            console.log("Backend response:", data);
-
-            speakText(data.message || "I didn’t catch that.", () => {
-                document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
-
-                // Refresh tasks when backend confirms
-                if (data.reload_page) {
-                    setTimeout(() => location.reload(), 500);
-                    stopVoiceControl();
-                    return;
-                }
-                // Continue conversation if backend says so
-                if (data.continue_listening && isListening) {
-                    setTimeout(() => listenOnce(), 600);
-                } else {
-                    stopVoiceControl();
-                }
-            });
-        })
-        .catch(err => {
-            console.error("Fetch error:", err);
-            document.getElementById('voiceStatus').textContent = "❌ Error sending command";
-            stopVoiceControl();
-        });
-    };
-    recognition.onerror = (event) => {
-        console.error("Speech recognition error:", event.error);
-        document.getElementById('voiceStatus').textContent = "❌ Voice error: " + event.error;
-
-        if (event.error === "no-speech" && isListening) {
-            setTimeout(() => listenOnce(), 600); 
-        } else {
-            stopVoiceControl();
-        }
-    };
-
-    recognition.onend = () => {
-
-
-    };
-
-    recognition.start();
-}
-
-
-// STOP listening button
-function stopVoiceControl() {
-    if (recognition) recognition.stop();
-    isListening = false;
-    document.getElementById('voiceBtn').classList.remove('listening');
-    document.getElementById('stopBtn').style.display = 'none';
-    document.getElementById('voiceStatus').textContent = "🛑 Voice stopped";
+    fetch("/voice/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
+      body: JSON.stringify({ transcript })
+    })
+    .then(res => res.json())
+    .then(data => {
+      speakText(data.message || "I didn’t catch that.", () => {
+        document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
+        if (data.reload_page) { setTimeout(() => location.reload(), 500); stopVoiceControl(); return; }
+        if (data.continue_listening && isListening) setTimeout(() => listenOnce(), 500);
+        else stopVoiceControl();
+      });
+    })
+    .catch(() => { document.getElementById('voiceStatus').textContent = "❌ Error sending command"; stopVoiceControl(); });
+  };
+  recognition.onerror = (ev) => {
+    document.getElementById('voiceStatus').textContent = "❌ Voice error: " + ev.error;
+    if (ev.error === "no-speech" && isListening) setTimeout(() => listenOnce(), 500);
+    else stopVoiceControl();
+  };
+  recognition.start();
 }
 </script>
 
