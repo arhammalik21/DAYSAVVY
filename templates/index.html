@@ -272,170 +272,172 @@
     </button>
     <div id="voiceStatus" class="mt-2 text-muted">🎙️ Click EI Voice to start</div>
 
+<!-- EI Voice: language + gender controls -->
+<div class="d-flex align-items-center gap-2 mb-2">
+  <select id="voiceLangSelect" class="form-select" style="width:140px">
+    <option value="hinglish" selected>Hinglish</option>
+    <option value="en">English</option>
+    <option value="hi">हिंदी</option>
+  </select>
+  <select id="voiceGenderSelect" class="form-select" style="width:140px">
+    <option value="female" selected>Female</option>
+    <option value="male">Male</option>
+  </select>
+</div>
 
-<!-- NEW: Language + Voice -->
-    <select id="voiceLangSelect" class="form-select" style="width:140px">
-      <option value="hinglish">Hinglish</option>
-      <option value="en">English</option>
-      <option value="hi">हिंदी</option>
-    </select>
-    <select id="voiceGenderSelect" class="form-select" style="width:140px">
-      <option value="female">Female</option>
-      <option value="male">Male</option>
-    </select>
-  </div>
+
 <script>
-// CSRF
-let isListening = false, recognition = null, csrfToken = null;
-fetch("/csrf-token").then(r=>r.json()).then(j=>{ csrfToken = j.csrf_token; });
+// Globals
+let csrfToken, isListening = false, recognition = null;
 
-// Map app langs to STT/TTS codes
-function langToBCP47(v){
-  if (v === 'hi') return 'hi-IN';
-  if (v === 'en') return 'en-US';
-  return 'en-IN'; // hinglish default
-}
-// Server prefs load/save
-async function loadVoicePrefs(){
+// CSRF + prefs init
+(async () => {
+  try { csrfToken = (await fetch('/csrf-token').then(r=>r.json())).csrf_token; } catch {}
   try {
     const p = await fetch('/voice/prefs', {credentials:'same-origin'}).then(r=>r.json());
     const langSel = document.getElementById('voiceLangSelect');
     const genSel  = document.getElementById('voiceGenderSelect');
-    if (langSel) langSel.value = p.lang || 'hinglish';
-    if (genSel)  genSel.value  = p.gender || 'female';
-    window.voiceLang = langSel.value;
-    window.voiceLangCode = langToBCP47(window.voiceLang);
-    window.voiceGender = genSel.value;
+    if (langSel && p.lang) langSel.value = p.lang;
+    if (genSel && p.gender) genSel.value = p.gender;
   } catch {}
-}
-async function saveVoicePrefs(delta){
-  await fetch('/voice/prefs', {
+})();
+
+// Save prefs on change
+document.getElementById('voiceLangSelect')?.addEventListener('change', async (e) => {
+  await fetch('/voice/prefs', { method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
+    credentials:'same-origin', body: JSON.stringify({ lang: e.target.value }) });
+});
+document.getElementById('voiceGenderSelect')?.addEventListener('change', async (e) => {
+  await fetch('/voice/prefs', { method:'POST', headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
+    credentials:'same-origin', body: JSON.stringify({ gender: e.target.value }) });
+});
+
+// Remove duplicate playTTS (keep only one). This one is fine.
+async function playTTS(text) {
+  const langSel = document.getElementById('voiceLangSelect');
+  const genSel  = document.getElementById('voiceGenderSelect');
+  const res = await fetch('/voice/tts', {
     method:'POST',
     headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
     credentials:'same-origin',
-    body: JSON.stringify(delta)
+    body: JSON.stringify({ text: text || "", lang: langSel?.value || 'hinglish', gender: genSel?.value || 'female' })
   });
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  try { await audio.play(); } catch {}
+  await new Promise(r => { audio.onended = r; audio.onerror = r; });
+  URL.revokeObjectURL(url);
 }
-document.addEventListener('DOMContentLoaded', async () => {
-  await loadVoicePrefs();
-  const langSel = document.getElementById('voiceLangSelect');
-  const genSel  = document.getElementById('voiceGenderSelect');
-  langSel?.addEventListener('change', async () => {
-    window.voiceLang = langSel.value;
-    window.voiceLangCode = langToBCP47(window.voiceLang);
-    await saveVoicePrefs({ lang: window.voiceLang });
-    document.getElementById('voiceStatus').textContent = (window.voiceLang==='hi')
-      ? 'Ab main Hindi mein bolunga/bologi.'
-      : (window.voiceLang==='en' ? 'I will speak English now.' : 'Hinglish mode on.');
-  });
-  genSel?.addEventListener('change', async () => {
-    window.voiceGender = genSel.value;
-    await saveVoicePrefs({ gender: window.voiceGender });
-  });
-});
-// TTS: pick best browser voice by language + gender
-let voices = [];
-function refreshVoices(){ try{ voices = speechSynthesis.getVoices(); }catch{} }
-if ('speechSynthesis' in window){ speechSynthesis.onvoiceschanged = refreshVoices; refreshVoices(); }
-
-function pickVoice(langCode, gender){
-  const lc = (langCode||'en-IN').toLowerCase();
-  const list = (voices||[]).filter(v => (v.lang||'').toLowerCase().startsWith(lc.split('-')[0]));
-  const maleHints = ['male','guy','arun','mukesh','madhur','adam','raj','man'];
-  const femaleHints = ['female','jenny','swara','asha','neural','woman','girl','zara','nita'];
-  const hints = (gender==='male') ? maleHints : femaleHints;
-  let best = list.find(v => hints.some(h => (v.name||'').toLowerCase().includes(h)));
-  if (!best) best = list.find(v => v.lang && v.lang.toLowerCase()===lc);
-  if (!best) best = list[0];
-  return best || null;
-}
-function speakText(text, cb=null){
-  if (!('speechSynthesis' in window)) { cb&&cb(); return; }
-  const u = new SpeechSynthesisUtterance(text || "");
-  u.lang = window.voiceLangCode || 'en-IN';
-  const v = pickVoice(u.lang, window.voiceGender || 'female');
-  if (v) u.voice = v;
-  u.rate = 1; u.pitch = 1;
-  const done = () => { try{cb&&cb();}catch{} };
-  u.onend = done; u.onerror = done;
-  try { speechSynthesis.cancel(); } catch(_){}
-  try { speechSynthesis.speak(u); } catch(_){ done(); }
-}
-
-// STT: use selected language
+// Ensure all replies use neural TTS
+window.speakText = function(text, cb){ return playTTS(text).then(()=>{ try{cb&&cb();}catch{} }); };
+// STT helpers
+function langToBCP47(v){ return v==='hi' ? 'hi-IN' : (v==='en' ? 'en-US' : 'en-IN'); }
 function createRecognition(){
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return null;
   const r = new SR();
+  const langSel = document.getElementById('voiceLangSelect');
+  r.lang = langToBCP47(langSel?.value || 'hinglish');
   r.continuous = false;
   r.interimResults = false;
-  r.lang = window.voiceLangCode || 'en-IN';
   return r;
 }
-// Start voice
-function startVoiceControl() {
-  if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
-    document.getElementById('voiceStatus').textContent = '❌ Speech not supported. Use Chrome.';
-    return;
-  }
+
+// Start/Stop + loop
+async function startVoiceControl(){
   if (isListening) return;
   isListening = true;
-  document.getElementById('voiceBtn').classList.add('listening');
+  document.getElementById('voiceBtn')?.classList.add('listening');
   document.getElementById('stopBtn').style.display = 'inline-block';
+  document.getElementById('voiceStatus').textContent = '⏳ Starting…';
 
-  fetch("/voice/welcome")
-    .then(res => res.json())
-    .then(data => {
-      speakText(data.message, () => {
-        document.getElementById('voiceStatus').textContent = data.message;
-        if (data.continue_listening && isListening) listenOnce();
-        else stopVoiceControl();
-      });
-    })
-    .catch(() => { document.getElementById('voiceStatus').textContent = "❌ Error starting voice"; stopVoiceControl(); });
+  try {
+    const welcome = await fetch('/voice/welcome').then(r=>r.json());
+    await speakText(welcome.message);
+    document.getElementById('voiceStatus').textContent = welcome.message || '🎤 Listening…';
+    if (welcome.continue_listening) listenOnce();
+  } catch (e) {
+    document.getElementById('voiceStatus').textContent = '❌ Could not start voice.';
+    stopVoiceControl();
+  }
 }
-function stopVoiceControl() {
+function stopVoiceControl(){
   isListening = false;
-  if (recognition) recognition.stop();
-  document.getElementById('voiceBtn').classList.remove('listening');
+  try { recognition && recognition.stop(); } catch {}
+  document.getElementById('voiceBtn')?.classList.remove('listening');
   document.getElementById('stopBtn').style.display = 'none';
   document.getElementById('voiceStatus').textContent = '🛑 Voice stopped';
 }
-// One turn listen
-function listenOnce() {
+function listenOnce(){
   if (!isListening) return;
   recognition = createRecognition();
-  if (!recognition) { document.getElementById('voiceStatus').textContent = '❌ Speech not available'; stopVoiceControl(); return; }
-
-  recognition.onstart = () => { document.getElementById('voiceStatus').textContent = '🎤 Listening...'; };
-  recognition.onresult = (e) => {
-    const transcript = e.results[0][0].transcript.trim();
-    document.getElementById('voiceStatus').textContent = `⏳ Processing: "${transcript}"`;
-    recognition.stop();
-
-    fetch("/voice/command", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
-      body: JSON.stringify({ transcript })
-    })
-    .then(res => res.json())
-    .then(data => {
-      speakText(data.message || "I didn’t catch that.", () => {
-        document.getElementById('voiceStatus').textContent = `✅ ${data.message}`;
-        if (data.reload_page) { setTimeout(() => location.reload(), 500); stopVoiceControl(); return; }
-        if (data.continue_listening && isListening) setTimeout(() => listenOnce(), 500);
-        else stopVoiceControl();
-      });
-    })
-    .catch(() => { document.getElementById('voiceStatus').textContent = "❌ Error sending command"; stopVoiceControl(); });
-  };
-  recognition.onerror = (ev) => {
-    document.getElementById('voiceStatus').textContent = "❌ Voice error: " + ev.error;
-    if (ev.error === "no-speech" && isListening) setTimeout(() => listenOnce(), 500);
-    else stopVoiceControl();
+  if (!recognition){ document.getElementById('voiceStatus').textContent='❌ Speech not supported. Use Chrome.'; return stopVoiceControl(); }
+  recognition.onstart  = () => document.getElementById('voiceStatus').textContent = '🎤 Listening…';
+  recognition.onerror  = (e) => { document.getElementById('voiceStatus').textContent = '❌ ' + e.error; if (e.error==='no-speech' && isListening){ setTimeout(listenOnce, 400); } else { stopVoiceControl(); } };
+  recognition.onresult = async (ev) => {
+    const transcript = ev.results[0][0].transcript.trim();
+    document.getElementById('voiceStatus').textContent = `⏳ “${transcript}”`;
+    try {
+      const r = await fetch('/voice/command', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
+        credentials:'same-origin',
+        body: JSON.stringify({ transcript })
+      }).then(x=>x.json());
+      await speakText(r.message || 'OK');
+      document.getElementById('voiceStatus').textContent = r.message || '✓';
+      if (r.reload_page) { location.reload(); return; }
+      if (r.continue_listening && isListening) setTimeout(listenOnce, 300);
+      else stopVoiceControl();
+    } catch(e) {
+      document.getElementById('voiceStatus').textContent = '❌ Error processing.';
+      stopVoiceControl();
+    }
   };
   recognition.start();
 }
+// Expose to buttons
+window.startVoiceControl = startVoiceControl;
+window.stopVoiceControl  = stopVoiceControl;
+</script>
+
+<script>
+// Replace speakText with neural TTS playback
+async function playTTS(text) {
+  try {
+    const langSel = document.getElementById('voiceLangSelect');
+    const genSel  = document.getElementById('voiceGenderSelect');
+    const body = {
+      text: text || "",
+      lang: (langSel?.value || 'hinglish'),
+      gender: (genSel?.value || 'female')
+    };
+    const res = await fetch('/voice/tts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrfToken},
+      credentials: 'same-origin',
+      body: JSON.stringify(body)
+    });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    await audio.play().catch(()=>{ /* ignore autoplay errors */ });
+    await new Promise(resolve => { audio.onended = resolve; audio.onerror = resolve; });
+    URL.revokeObjectURL(url);
+  } catch(e) {
+    console.error('TTS error', e);
+  }
+}
+
+// Use playTTS wherever you currently call speakText
+// 1) At start
+// fetch("/voice/welcome").then(...).then(data => {
+//   return playTTS(data.message).then(() => { ...listenOnce()... });
+// });
+
+// 2) After you POST /voice/command, replace speakText(data.message, ...) with:
+/// playTTS(data.message).then(() => { /* continue or stop */ });
 </script>
 
 <!-- Decompose Task Modal -->
@@ -535,7 +537,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     <!-- Tasks header with hint about current filter state -->
     <div class="d-flex justify-content-between align-items-center mb-2">
-      <h5 class="mb-0">Tasks</h5>
       {% if request.args.get('q') or request.args.get('status') %}
         <small class="text-muted">
           Showing filtered results
@@ -543,7 +544,6 @@ document.addEventListener('DOMContentLoaded', () => {
           {% if request.args.get('status') %} ({{ request.args.get('status') }}) {% endif %}
         </small>
       {% else %}
-        <small class="text-muted">Showing all tasks</small>
       {% endif %}
     </div>
 

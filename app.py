@@ -22,6 +22,10 @@ from sqlalchemy.exc import IntegrityError
 from flask_migrate import Migrate
 from flask_cors import CORS
 from sqlalchemy.exc import IntegrityError
+from flask import (
+    Flask, render_template, redirect, url_for, flash, abort, request,
+    jsonify, session, send_from_directory, Response  # add Response
+)
 
 # Optional libs 
 try:
@@ -117,6 +121,191 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
+
+# OpenAI neural TTS client (optional; safe if not installed)
+try:
+    from openai import OpenAI
+    _oa_client = OpenAI()
+except Exception:
+    _oa_client = None
+
+def _choose_tts_voice(lang: str, gender: str) -> str:
+    # Gentle defaults: 'verse' (female-ish), 'alloy' (male-ish)
+    return "alloy" if (gender or "").lower() == "male" else "verse"
+
+@app.route("/voice/tts", methods=["POST"])
+def voice_tts():
+    """
+    POST {text, lang, gender} -> mp3 audio bytes
+    Uses OpenAI gpt-4o-mini-tts if available; falls back to gTTS.
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return Response(b"", mimetype="audio/mpeg")
+
+        prefs_lang = session.get("voice_lang", "hinglish")
+        prefs_gender = session.get("voice_gender", "female")
+        lang = (data.get("lang") or prefs_lang).lower()
+        gender = (data.get("gender") or prefs_gender).lower()
+        voice = _choose_tts_voice(lang, gender)
+
+        # OpenAI neural TTS (requires openai>=1.x and OPENAI_API_KEY)
+        if _oa_client and os.getenv("OPENAI_API_KEY"):
+            try:
+                res = _oa_client.audio.speech.create(
+                    model="gpt-4o-mini-tts",
+                    voice=voice,
+                    input=text,
+                    format="mp3",
+                )
+                audio_bytes = res.read()
+                return Response(audio_bytes, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            except Exception as e:
+                print("[TTS] OpenAI error:", e)
+
+        # Fallback: gTTS (en/hi basic)
+        if gTTS:
+            fp = io.BytesIO()
+            try:
+                gTTS(text=text, lang=("hi" if lang == "hi" else "en"), slow=False).write_to_fp(fp)
+                fp.seek(0)
+                return Response(fp.read(), mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            except Exception as e:
+                print("[TTS] gTTS error:", e)
+
+        return Response(b"", mimetype="audio/mpeg")
+    except Exception as e:
+        print("[TTS] route error:", e)
+        return Response(b"", mimetype="audio/mpeg", status=500)
+
+# Azure Speech SDK
+import hashlib
+from collections import OrderedDict
+import importlib
+try:
+    speechsdk = importlib.import_module("azure.cognitiveservices.speech")
+except Exception:
+    speechsdk = None
+# ...existing code...
+
+# Small in-memory LRU cache for TTS audio
+_TTS_CACHE = OrderedDict()
+_TTS_CACHE_MAX = 256  # entries
+
+def _tts_cache_key(provider: str, voice: str, text: str) -> str:
+    return hashlib.sha256(f"{provider}|{voice}|{text}".encode("utf-8")).hexdigest()
+
+def _tts_cache_get(key: str):
+    if key in _TTS_CACHE:
+        _TTS_CACHE.move_to_end(key)
+        return _TTS_CACHE[key]
+    return None
+
+def _tts_cache_put(key: str, value: bytes):
+    _TTS_CACHE[key] = value
+    _TTS_CACHE.move_to_end(key)
+    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
+        _TTS_CACHE.popitem(last=False)
+
+def _azure_voice_shortname(lang: str, gender: str) -> str:
+    lg = (lang or "hinglish").lower()
+    gd = (gender or "female").lower()
+    if lg == "hi":
+        return "hi-IN-MadhurNeural" if gd == "male" else "hi-IN-SwaraNeural"
+    if lg == "en":
+        return "en-US-GuyNeural" if gd == "male" else "en-US-JennyNeural"
+    # Hinglish → Indian English
+    return "en-IN-PrabhatNeural" if gd == "male" else "en-IN-NeerjaNeural"
+
+def _openai_voice_name(lang: str, gender: str) -> str:
+    return "alloy" if (gender or "").lower() == "male" else "verse"
+
+@app.route("/voice/tts-openai-basic", methods=["POST"])
+def voice_tts_openai_basic():
+    """
+    POST {text, lang, gender} -> mp3
+    Provider order: Azure (if configured) → OpenAI → gTTS → empty
+    Cached in-memory by (provider, voice, text).
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return Response(b"", mimetype="audio/mpeg")
+
+        lang = (data.get("lang") or session.get("voice_lang", "hinglish")).lower()
+        gender = (data.get("gender") or session.get("voice_gender", "female")).lower()
+
+        provider = os.getenv("TTS_PROVIDER", "auto").lower()
+        azure_key = os.getenv("AZURE_SPEECH_KEY")
+        azure_region = os.getenv("AZURE_SPEECH_REGION")
+
+        # 1) Azure Speech
+        if (provider in ("auto", "azure")) and speechsdk and azure_key and azure_region:
+            voice = _azure_voice_shortname(lang, gender)
+            cache_key = _tts_cache_key("azure", voice, text)
+            cached = _tts_cache_get(cache_key)
+            if cached is not None:
+                return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            try:
+                speech_config = speechsdk.SpeechConfig(subscription=azure_key, region=azure_region)
+                speech_config.set_speech_synthesis_output_format(
+                    speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+                )
+                speech_config.speech_synthesis_voice_name = voice
+                synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+                result = synthesizer.speak_text_async(text).get()
+                if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted and result.audio_data:
+                    _tts_cache_put(cache_key, result.audio_data)
+                    return Response(result.audio_data, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+                else:
+                    print("[TTS][Azure] synthesis failed:", result.reason)
+            except Exception as e:
+                print("[TTS][Azure] error:", e)
+
+        # 2) OpenAI TTS
+        if (provider in ("auto", "openai")) and _oa_client and os.getenv("OPENAI_API_KEY"):
+            voice = _openai_voice_name(lang, gender)
+            cache_key = _tts_cache_key("openai", voice, text)
+            cached = _tts_cache_get(cache_key)
+            if cached is not None:
+                return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            try:
+                res = _oa_client.audio.speech.create(
+                    model="gpt-4o-mini-tts",
+                    voice=voice,
+                    input=text,
+                    format="mp3",
+                )
+                audio_bytes = res.read()
+                _tts_cache_put(cache_key, audio_bytes)
+                return Response(audio_bytes, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            except Exception as e:
+                print("[TTS][OpenAI] error:", e)
+
+        # 3) gTTS fallback
+        if gTTS:
+            cache_key = _tts_cache_key("gtts", f"{lang}-{gender}", text)
+            cached = _tts_cache_get(cache_key)
+            if cached is not None:
+                return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            try:
+                fp = io.BytesIO()
+                gTTS(text=text, lang=("hi" if lang == "hi" else "en"), slow=False).write_to_fp(fp)
+                fp.seek(0)
+                audio = fp.read()
+                _tts_cache_put(cache_key, audio)
+                return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
+            except Exception as e:
+                print("[TTS][gTTS] error:", e)
+
+        # 4) Last resort
+        return Response(b"", mimetype="audio/mpeg")
+    except Exception as e:
+        print("[TTS] route error:", e)
+        return Response(b"", mimetype="audio/mpeg", status=500)
 
 # NEW: simple emotion log (no schema break to existing tables)
 class EmotionEvent(db.Model):
