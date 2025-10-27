@@ -133,8 +133,8 @@ def _choose_tts_voice(lang: str, gender: str) -> str:
     # Gentle defaults: 'verse' (female-ish), 'alloy' (male-ish)
     return "alloy" if (gender or "").lower() == "male" else "verse"
 
-@app.route("/voice/tts", methods=["POST"])
-def voice_tts():
+@app.route("/voice/tts-basic", methods=["POST"])  
+def voice_tts_basic():  
     """
     POST {text, lang, gender} -> mp3 audio bytes
     Uses OpenAI gpt-4o-mini-tts if available; falls back to gTTS.
@@ -188,7 +188,7 @@ try:
     speechsdk = importlib.import_module("azure.cognitiveservices.speech")
 except Exception:
     speechsdk = None
-# ...existing code...
+
 
 # Small in-memory LRU cache for TTS audio
 _TTS_CACHE = OrderedDict()
@@ -302,6 +302,132 @@ def voice_tts_openai_basic():
                 print("[TTS][gTTS] error:", e)
 
         # 4) Last resort
+        return Response(b"", mimetype="audio/mpeg")
+    except Exception as e:
+        print("[TTS] route error:", e)
+        return Response(b"", mimetype="audio/mpeg", status=500)
+
+# Gentle smalltalk without external LLM (works offline/quota-free)
+def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
+    emo = (emotion or "neutral").lower()
+    if lang == "hi":
+        prefix = {
+            "stressed": "Lagta hai thoda stress hai.",
+            "sad": "Lagta hai mann halka sa udaas hai.",
+            "tired": "Lagta hai thakan si hai.",
+            "positive": "Energy achchi lag rahi hai!",
+            "neutral": "Theek hai."
+        }.get(emo, "Theek hai.")
+        return f"{prefix} Bolo, main saath hoon. Chaho to 5‑min ka reset bana deta hoon, ya next step plan karte hain. Jo bhi chal raha hai share kar sakte ho."
+    if lang == "en":
+        prefix = {
+            "stressed": "Sounds like there’s some pressure.",
+            "sad": "You seem a bit low.",
+            "tired": "You sound a little tired.",
+            "positive": "Love the energy!",
+            "neutral": "Got it."
+        }.get(emo, "Got it.")
+        return f"{prefix} I’m here with you. Want me to add a quick 5‑minute reset, or help you plan your next step? You can also just talk it out."
+    # Hinglish default
+    prefix = {
+        "stressed": "Lagta hai thoda pressure chal raha hai.",
+        "sad": "Lagta hai mood thoda low hai.",
+        "tired": "Lagta hai thoda tired feel ho raha hai.",
+        "positive": "Vibes achchi hain!",
+        "neutral": "Theek hai."
+    }.get(emo, "Theek hai.")
+    return f"{prefix} Main yahin hoon. 5‑min ka reset bana du ya next step plan karein? Chahe to casually baat bhi kar sakte hain."
+
+# ---- Azure Speech dynamic import (no Pylance warning if not installed) ----
+try:
+    speechsdk = importlib.import_module("azure.cognitiveservices.speech")
+except Exception:
+    speechsdk = None
+
+# ---- TTS cache ----
+_TTS_CACHE = OrderedDict()
+_TTS_CACHE_MAX = 256
+def _tts_cache_key(provider: str, voice: str, text: str) -> str:
+    return hashlib.sha256(f"{provider}|{voice}|{text}".encode("utf-8")).hexdigest()
+def _tts_cache_get(key: str):
+    if key in _TTS_CACHE:
+        _TTS_CACHE.move_to_end(key)
+        return _TTS_CACHE[key]
+    return None
+def _tts_cache_put(key: str, value: bytes):
+    _TTS_CACHE[key] = value
+    _TTS_CACHE.move_to_end(key)
+    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
+        _TTS_CACHE.popitem(last=False)
+
+def _azure_voice_shortname(lang: str, gender: str) -> str:
+    lg = (lang or "hinglish").lower(); gd = (gender or "female").lower()
+    if lg == "hi":
+        return "hi-IN-MadhurNeural" if gd == "male" else "hi-IN-SwaraNeural"
+    if lg == "en":
+        return "en-US-GuyNeural" if gd == "male" else "en-US-JennyNeural"
+    return "en-IN-PrabhatNeural" if gd == "male" else "en-IN-NeerjaNeural"
+
+def _openai_voice_name(lang: str, gender: str) -> str:
+    return "alloy" if (gender or "").lower() == "male" else "verse"
+
+# REPLACE: single /voice/tts (Azure → OpenAI → gTTS, cached)
+@app.route("/voice/tts", methods=["POST"])
+def voice_tts():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return Response(b"", mimetype="audio/mpeg")
+        lang = (data.get("lang") or session.get("voice_lang", "hinglish")).lower()
+        gender = (data.get("gender") or session.get("voice_gender", "female")).lower()
+
+        provider = os.getenv("TTS_PROVIDER", "auto").lower()
+        azure_key = os.getenv("AZURE_SPEECH_KEY"); azure_region = os.getenv("AZURE_SPEECH_REGION")
+
+        # 1) Azure
+        if (provider in ("auto","azure")) and speechsdk and azure_key and azure_region:
+            voice = _azure_voice_shortname(lang, gender)
+            ck = _tts_cache_key("azure", voice, text); cached = _tts_cache_get(ck)
+            if cached is not None: return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+            try:
+                speech_config = speechsdk.SpeechConfig(subscription=azure_key, region=azure_region)
+                speech_config.set_speech_synthesis_output_format(
+                    speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+                )
+                speech_config.speech_synthesis_voice_name = voice
+                synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
+                result = synthesizer.speak_text_async(text).get()
+                if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted and result.audio_data:
+                    _tts_cache_put(ck, result.audio_data)
+                    return Response(result.audio_data, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+            except Exception as e:
+                print("[TTS][Azure] error:", e)
+
+        # 2) OpenAI
+        if (provider in ("auto","openai")) and _oa_client and os.getenv("OPENAI_API_KEY"):
+            voice = _openai_voice_name(lang, gender)
+            ck = _tts_cache_key("openai", voice, text); cached = _tts_cache_get(ck)
+            if cached is not None: return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+            try:
+                res = _oa_client.audio.speech.create(model="gpt-4o-mini-tts", voice=voice, input=text, format="mp3")
+                audio_bytes = res.read()
+                _tts_cache_put(ck, audio_bytes)
+                return Response(audio_bytes, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+            except Exception as e:
+                print("[TTS][OpenAI] error:", e)
+
+        # 3) gTTS
+        if gTTS:
+            ck = _tts_cache_key("gtts", f"{lang}-{gender}", text); cached = _tts_cache_get(ck)
+            if cached is not None: return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+            try:
+                fp = io.BytesIO(); gTTS(text=text, lang=("hi" if lang=="hi" else "en"), slow=False).write_to_fp(fp)
+                fp.seek(0); audio = fp.read(); _tts_cache_put(ck, audio)
+                return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+            except Exception as e:
+                print("[TTS][gTTS] error:", e)
+
         return Response(b"", mimetype="audio/mpeg")
     except Exception as e:
         print("[TTS] route error:", e)
@@ -1036,12 +1162,286 @@ import re
 #Welcome route
 @app.route("/voice/welcome", methods=["GET"])
 def voice_welcome():
-    msg = tr(
-        "Hey, I’m here. Talk to me casually. You can say: add a task, break this down, reschedule today, or list my tasks.",
-        "Hi, main yahin hoon. Aaram se baat karo. Aap keh sakte hain: ek kaam jodo, ise tod do, aaj ke kaam kal kar do, ya kaam dikhao.",
-        "Hey, main yahin hoon. Bindaas bolo. Bol sakte ho: ek task add karo, ise tod do, aaj ke kaam kal shift karo, ya tasks dikhao."
-    )
-    return jsonify({"message": msg, "continue_listening": True})
+    return jsonify({
+        "message": tr(
+            "Hey, I’m here. Talk to me casually—add tasks, break a goal down, reschedule today, or just share what’s on your mind.",
+            "Hi, main yahin hoon. Aaram se bolo—kaam jodo, goal tod do, aaj ke kaam shift karo, ya jo mann mein ho share karo.",
+            "Hey, main yahin hoon. Bindaas bolo—task add karo, goal tod do, aaj ka shift karo, ya bas jo chal raha hai share karo."
+        ),
+        "continue_listening": True
+    })
+
+@app.route("/voice/command-legacy", methods=["POST"])
+def voice_command_legacy():
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        transcript = (data.get("transcript") or "").strip()
+        tl = transcript.lower()
+        uid = session.get("user_id")
+        prefs = get_voice_prefs()
+        lang = prefs.get("lang", "hinglish")
+
+        # Cancel / Empty
+        if any(k in tl for k in ("stop","cancel","exit","quit","bas","ruko")):
+            _clear_flow()
+            return jsonify({"message": tr("Okay, cancelled.","Theek hai, cancel kiya.","Theek hai, cancel kiya."),
+                            "continue_listening": False, "task_added": False})
+        if not transcript:
+            return jsonify({"message": tr("I didn’t catch that. Say it again?",
+                                          "Samajh nahi aaya. Dobara bolein?",
+                                          "Samajh nahi aaya. Phir bolo?"),
+                            "continue_listening": True, "task_added": False})
+
+        # Emotion + proactive reschedule
+        emotion, emo_score = detect_emotion(transcript)
+        if uid: log_emotion(uid, emotion, emo_score)
+        if uid and not _get_flow().get("mode") and emotion in {"stressed","sad","tired"}:
+            todays = propose_reschedule_candidates(uid)
+            if todays:
+                _save_flow({"mode": "reschedule_offer", "step": "confirm", "payload": {"days": 1}})
+                return jsonify({"message": tr(
+                                    f"{empathetic_prefix(emotion)} Want me to move today’s {len(todays)} task(s) to tomorrow?",
+                                    f"{empathetic_prefix(emotion)} Kya aaj ke {len(todays)} kaam kal shift kar du?",
+                                    f"{empathetic_prefix(emotion)} Aaj ke {len(todays)} tasks kal shift kar du?"
+                                ),
+                                "continue_listening": True, "task_added": False})
+
+        # NLU
+        parsed = nlu_understand(transcript, lang)
+        intent = parsed.get("intent","unknown")
+        slots = parsed.get("slots") if isinstance(parsed.get("slots"), dict) else {}
+
+        # Smalltalk
+        if intent == "smalltalk":
+            msg = _gen_empathetic_reply_local(transcript, emotion, lang)
+            # Offer a tiny reset task
+            _save_flow({"mode":"add","step":"due","task":{"name": tr("Take a 5‑minute reset",
+                                                                     "5‑minute ka reset lo",
+                                                                     "5‑minute ka reset lo")}})
+            return jsonify({"message": msg, "continue_listening": True, "task_added": False})
+
+        # Intents
+        if intent == "add_task":
+            name = normalize_task_name(slots.get("task") or "")
+            if name:
+                _save_flow({"mode":"add","step":"due","task":{"name": name}})
+                return jsonify({"message": tr(
+                                    f"Adding ‘{name}’. When is it due? Say today, tomorrow, a date, or skip.",
+                                    f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip.",
+                                    f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip."
+                                ),
+                                "continue_listening": True, "task_added": False})
+
+        if intent == "list_tasks" and uid:
+            tasks = Task.query.filter_by(user_id=uid).order_by(Task.completed.asc(), Task.id.desc()).all()
+            if not tasks:
+                return jsonify({"message": tr("You have no tasks.","Aapke paas abhi koi tasks nahi hain.","Koi tasks nahi hain."),
+                                "continue_listening": False, "task_added": False})
+            preview = ", ".join(f"{t.name} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
+            more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
+            return jsonify({"message": tr(
+                                f"You have {len(tasks)} tasks: {preview}{more}",
+                                f"Aapke {len(tasks)} tasks hain: {preview}{more}",
+                                f"Aapke {len(tasks)} tasks hain: {preview}{more}"
+                            ),
+                            "continue_listening": False, "task_added": False})
+
+        if intent == "complete_task" and uid and slots.get("task"):
+            q = normalize_task_name(slots["task"])
+            cand = Task.query.filter(Task.user_id==uid, Task.name.ilike(f"%{q}%"), Task.completed == False).first()
+            if cand:
+                cand.completed = True; db.session.commit(); _clear_flow()
+                return jsonify({"message": tr(f"Marked ‘{cand.name}’ complete.",
+                                              f"‘{cand.name}’ complete kar diya.",
+                                              f"‘{cand.name}’ complete ho gaya."),
+                                "continue_listening": False, "task_added": False, "reload_page": True})
+
+        if intent == "delete_task" and uid and slots.get("task"):
+            q = normalize_task_name(slots["task"])
+            cand = Task.query.filter(Task.user_id==uid, Task.name.ilike(f"%{q}%")).first()
+            if cand:
+                title = cand.name
+                if cand.parent_id is None:
+                    Task.query.filter_by(user_id=uid, parent_id=cand.id).delete(synchronize_session=False)
+                db.session.delete(cand); db.session.commit(); _clear_flow()
+                return jsonify({"message": tr(f"Deleted ‘{title}’.",
+                                              f"‘{title}’ delete kar diya.",
+                                              f"‘{title}’ delete ho gaya."),
+                                "continue_listening": False, "task_added": False, "reload_page": True})
+
+        if intent == "reschedule" and uid:
+            try: days = int(slots.get("days") or 1)
+            except Exception: days = 1
+            moved = apply_reschedule(uid, days=days)
+            return jsonify({"message": tr(
+                                f"I moved {moved} task(s) by {days} day(s)." if moved else "No tasks to move.",
+                                f"{moved} tasks {days} din ke liye shift kiye." if moved else "Shift karne ko kuch nahi mila.",
+                                f"{moved} tasks {days} din ke liye shift kiye." if moved else "Kuch shift karne ko nahi mila."
+                            ),
+                            "continue_listening": True, "task_added": False, "reload_page": bool(moved)})
+
+        if intent == "decompose" and uid:
+            goal = normalize_task_name(slots.get("goal") or "")
+            if goal:
+                _save_flow({"mode":"decompose","step":"ask_due","payload":{"goal":goal}})
+                return jsonify({"message": tr(
+                                    f"Okay, breaking down ‘{goal}’. What’s the final due date? Say a date or skip.",
+                                    f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip.",
+                                    f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip."
+                                ),
+                                "continue_listening": True, "task_added": False})
+
+        # Flow handlers
+        flow = _get_flow(); mode = flow.get("mode"); step = flow.get("step"); task = flow.get("task") or {}
+
+        # RESCHEDULE OFFER confirm
+        if mode == "reschedule_offer" and step == "confirm" and uid:
+            if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay")):
+                days = int(flow.get("payload",{}).get("days",1)); moved = apply_reschedule(uid, days=days); _clear_flow()
+                return jsonify({"message": tr(
+                                    f"Done. I moved {moved} task(s) to tomorrow. Anything else?" if moved else
+                                    "Looks like there are no tasks due today to move.",
+                                    f"Ho gaya! {moved} kaam kal ke liye shift kiye. Aur kuch?" if moved else
+                                    "Aaj shift karne ke liye koi kaam nahi mila.",
+                                    f"Ho gaya! {moved} tasks kal shift kiye. Aur kuch?" if moved else
+                                    "Aaj shift karne ko kuch nahi mila."
+                                ),
+                                "continue_listening": True, "task_added": False, "reload_page": bool(moved)})
+            if any(w in tl for w in ("no","nah","nope","cancel")):
+                _clear_flow()
+                return jsonify({"message": tr("Okay. I’m here if you need anything.",
+                                              "Theek hai. Jab zaroorat ho batao.",
+                                              "Theek hai. Jab zaroorat ho batao."),
+                                "continue_listening": True, "task_added": False})
+            return jsonify({"message": tr("Should I move today’s tasks to tomorrow? Say yes or no.",
+                                          "Kya aaj ke tasks kal kar du? Haan ya na bolo.",
+                                          "Aaj ke tasks kal kar du? Haan ya na bolo."),
+                            "continue_listening": True, "task_added": False})
+
+        # ADD FLOW
+        if mode == "add":
+            if step == "title":
+                title_guess = _title_from_transcript(tl) or transcript
+                title = (title_guess or "").strip()
+                if not title:
+                    return jsonify({"message": tr("Say the task name, like ‘buy milk’.",
+                                                  "Task ka naam bolo, jaise ‘doodh lena’.",
+                                                  "Task ka naam bolo, jaise ‘buy milk’."),
+                                    "continue_listening": True, "task_added": False})
+                task["name"] = title; flow["step"] = "due"; flow["task"] = task; _save_flow(flow)
+                return jsonify({"message": tr(
+                                    f"Adding ‘{title}’. When is it due? Say today, tomorrow, a date, or skip.",
+                                    f"‘{title}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip.",
+                                    f"‘{title}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip."
+                                ),
+                                "continue_listening": True, "task_added": False})
+            if step == "due":
+                task["due_text"] = None if "skip" in tl else transcript
+                flow["step"] = "time"; flow["task"] = task; _save_flow(flow)
+                return jsonify({"message": tr("What time? Say ‘5 pm’ or say ‘skip’.",
+                                              "Kaunsa time? ‘5 baje’ bolo ya ‘skip’.",
+                                              "Kaunsa time? ‘5 pm’ bolo ya ‘skip’."),
+                                "continue_listening": True, "task_added": False})
+            if step == "time":
+                task["time_text"] = None if "skip" in tl else transcript
+                flow["step"] = "category"; flow["task"] = task; _save_flow(flow)
+                return jsonify({"message": tr("Which category? Work, Personal, Study, Health, or say ‘skip’.",
+                                              "Kaunsi category? Work, Personal, Study, Health, ya ‘skip’.",
+                                              "Kaunsi category? Work, Personal, Study, Health, ya ‘skip’."),
+                                "continue_listening": True, "task_added": False})
+            if step == "category":
+                if "skip" in tl: cat = "Other"
+                elif "work" in tl: cat = "Work"
+                elif "personal" in tl: cat = "Personal"
+                elif "study" in tl or "education" in tl: cat = "Study"
+                elif "health" in tl or "fitness" in tl: cat = "Health"
+                else: cat = transcript.strip().title() or "Other"
+                task["category"] = cat
+                parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
+                parsed_time = parse_task_time(task.get("time_text")) if task.get("time_text") else None
+                new_task = Task(
+                    name=task.get("name"),
+                    due_date=parsed_due,
+                    task_time=parsed_time,
+                    category=task.get("category", "Other"),
+                    priority=classify_priority(task.get("name") or ""),
+                    reminder_time=(datetime.combine(parsed_due, parsed_time) if (parsed_due and parsed_time) else None),
+                    user_id=uid
+                )
+                db.session.add(new_task); db.session.commit(); _clear_flow()
+                return jsonify({"message": tr(f"Task ‘{new_task.name}’ saved.",
+                                              f"‘{new_task.name}’ save ho gaya.",
+                                              f"‘{new_task.name}’ save ho gaya."),
+                                "continue_listening": False, "task_added": True, "reload_page": True})
+
+        # DECOMPOSE FLOW
+        if mode == "decompose" and uid:
+            if step == "ask_goal":
+                goal = transcript.strip()
+                if not goal or goal in {"skip","cancel"}:
+                    _clear_flow()
+                    return jsonify({"message": tr("Okay, cancelled.","Theek hai, cancel.","Theek hai, cancel."),
+                                    "continue_listening": False, "task_added": False})
+                flow["payload"] = {"goal": goal}; flow["step"] = "ask_due"; _save_flow(flow)
+                return jsonify({"message": tr("Got it. What’s the final due date? Say today, tomorrow, a date, or skip.",
+                                              "Samajh gaya. Final due date bolo: aaj, kal, koi date, ya skip.",
+                                              "Samajh gaya. Final due date bolo: aaj, kal, koi date, ya skip."),
+                                "continue_listening": True, "task_added": False})
+            if step == "ask_due":
+                flow.setdefault("payload", {}); flow["payload"]["due_text"] = None if "skip" in tl else transcript
+                flow["step"] = "ask_time"; _save_flow(flow)
+                return jsonify({"message": tr("What time should I target? Say a time like ‘5 pm’, or say ‘skip’.",
+                                              "Kaunsa time rakhein? ‘5 baje’ bolo ya ‘skip’.",
+                                              "Kaunsa time rakhein? ‘5 pm’ bolo ya ‘skip’."),
+                                "continue_listening": True, "task_added": False})
+            if step == "ask_time":
+                payload = flow.get("payload", {}); payload["time_text"] = None if "skip" in tl else transcript
+                goal = payload.get("goal", ""); preview = decompose_goal_text(goal)
+                names = [s["name"] for s in preview][:5]; more = "" if len(preview) <= 5 else f" and {len(preview)-5} more"
+                flow["payload"] = payload; flow["step"] = "confirm"; _save_flow(flow)
+                if not names:
+                    return jsonify({"message": tr("Couldn’t generate subtasks. Try rephrasing the goal.",
+                                                  "Subtasks nahi ban paaye. Thoda aur clear bolo.",
+                                                  "Subtasks nahi ban paaye. Thoda aur clear bolo."),
+                                    "continue_listening": False, "task_added": False})
+                return jsonify({"message": tr(f"I suggest: {', '.join(names)}{more}. Should I create these?",
+                                              f"Meri suggestion: {', '.join(names)}{more}. Bana du?",
+                                              f"Suggestion: {', '.join(names)}{more}. Bana du?"),
+                                "continue_listening": True, "task_added": False})
+            if step == "confirm":
+                if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay","do it","confirm")):
+                    payload = flow.get("payload", {})
+                    goal = payload.get("goal", ""); due = parse_due_date(payload.get("due_text") or ""); ttm = parse_task_time(payload.get("time_text") or "")
+                    result = create_goal_with_subtasks(uid, goal, due, ttm, category="Other")
+                    _clear_flow(); count = result.get("count", 0)
+                    if count:
+                        return jsonify({"message": tr(f"Done. I created {count} subtasks for ‘{goal}’.",
+                                                      f"Ho gaya. ‘{goal}’ ke {count} subtasks bana diye.",
+                                                      f"Ho gaya. ‘{goal}’ ke {count} subtasks bana diye."),
+                                        "continue_listening": False, "task_added": True, "reload_page": True})
+                    return jsonify({"message": tr("I couldn’t create the subtasks.",
+                                                  "Subtasks nahi ban paaye.",
+                                                  "Subtasks nahi ban paaye."),
+                                    "continue_listening": False, "task_added": False})
+                if any(w in tl for w in ("no","nah","nope","cancel")):
+                    _clear_flow()
+                    return jsonify({"message": tr("Cancelled.","Cancel kiya.","Cancel kiya."),
+                                    "continue_listening": False, "task_added": False})
+                return jsonify({"message": tr("Should I create these subtasks? Say yes or no.",
+                                              "Bana du? Haan ya na bolo.",
+                                              "Bana du? Haan ya na bolo."),
+                                "continue_listening": True, "task_added": False})
+
+        # Unknown → gentle fallback
+        msg = _gen_empathetic_reply_local(transcript, emotion, lang)
+        return jsonify({"message": msg, "continue_listening": True, "task_added": False})
+
+    except Exception as e:
+        print("[VOICE ERROR]", e)
+        return jsonify({"message": tr("Sorry — an error occurred. Try again.",
+                                      "Maaf kijiye, kuch gadbad ho gayi. Dobara koshish karein.",
+                                      "Sorry, thoda issue aaya. Dubara try karo."),
+                        "continue_listening": True, "task_added": False}), 200
 
 
 # Words used for yes/no checks
@@ -1230,75 +1630,75 @@ def _fmt_time_for_user(t):
 @app.route("/voice/command", methods=["POST"])
 def voice_command():
     try:
+        # Parse
         data = request.get_json(force=True, silent=True) or {}
         transcript = (data.get("transcript") or "").strip()
         tl = transcript.lower()
         uid = session.get("user_id")
+        prefs = get_voice_prefs()
+        lang = prefs.get("lang", "hinglish")
 
-        # Emotion detection + proactive help (keep existing)
-        emotion, emo_score = detect_emotion(transcript)
-        if uid: log_emotion(uid, emotion, emo_score)
-        if not _get_flow().get("mode") and emotion in {"stressed","sad","tired"} and uid:
-            todays = propose_reschedule_candidates(uid)
-            if todays:
-                _save_flow({"mode":"reschedule_offer","step":"confirm","payload":{"days":1}})
-                return jsonify({
-                    "message": tr(
-                        f"{empathetic_prefix(emotion)} Want me to move today’s {len(todays)} task(s) to tomorrow?",
-                        f"{empathetic_prefix(emotion)} Kya aaj ke {len(todays)} kaam kal shift kar du?",
-                        f"{empathetic_prefix(emotion)} Aaj ke {len(todays)} tasks kal shift kar du?"
-                    ),
-                    "continue_listening": True, "task_added": False
-                })
-            
-        # Quick cancel
+        # Defaults
+        emotion = "neutral"
+        emo_score = 0.5
+
+        # Cancel / empty
         if any(k in tl for k in ("stop","cancel","exit","quit","bas","ruko")):
             _clear_flow()
-            return jsonify({"message": tr("Okay, cancelled.","Theek hai, cancel kiya.","Theek hai, cancel kiya."), "continue_listening": False, "task_added": False})
-
+            return jsonify({"message": tr("Okay, cancelled.","Theek hai, cancel kiya.","Theek hai, cancel kiya."),
+                            "continue_listening": False, "task_added": False})
         if not transcript:
-            return jsonify({"message": tr("I didn’t catch that.","Samajh nahi aaya.","Samajh nahi aaya."), "continue_listening": True, "task_added": False})
+            return jsonify({"message": tr("I didn’t catch that. Say it again?",
+                                          "Samajh nahi aaya. Dobara bolein?",
+                                          "Samajh nahi aaya. Phir bolo?"),
+                            "continue_listening": True, "task_added": False})
 
-        # ---- NLU first: robust free-form understanding (EN/HI/Hinglish) ----
-        prefs = get_voice_prefs()
-        parsed = nlu_understand(transcript, prefs.get("lang","hinglish"))
+        # Emotion (never crash)
+        try:
+            emotion, emo_score = detect_emotion(transcript)
+            if uid:
+                log_emotion(uid, emotion, emo_score)
+            if uid and not _get_flow().get("mode") and emotion in {"stressed","sad","tired"}:
+                todays = propose_reschedule_candidates(uid)
+                if todays:
+                    _save_flow({"mode":"reschedule_offer","step":"confirm","payload":{"days":1}})
+                    return jsonify({"message": tr(
+                                        f"{empathetic_prefix(emotion)} Want me to move today’s {len(todays)} task(s) to tomorrow?",
+                                        f"{empathetic_prefix(emotion)} Kya aaj ke {len(todays)} kaam kal shift kar du?",
+                                        f"{empathetic_prefix(emotion)} Aaj ke {len(todays)} tasks kal shift kar du?"
+                                    ),
+                                    "continue_listening": True, "task_added": False})
+        except Exception as e:
+            print("[VOICE emotion]", e)
+
+        # NLU (OpenAI may quota-fail -> fallback heuristics)
+        parsed = nlu_understand(transcript, lang) or {"intent":"unknown","slots":{}}
         intent = parsed.get("intent","unknown")
         slots = parsed.get("slots") if isinstance(parsed.get("slots"), dict) else {}
 
-# Smalltalk / moral support
+        # Smalltalk
         if intent == "smalltalk":
-            msg = tr(
-                "I’m with you. Want a quick 5‑minute break task or should I help plan your next step?",
-                "Main yahin hoon. 5‑minute ka break task bana du, ya agla step plan karen?",
-                "Main yahin hoon. 5‑minute ka break task bana du ya next step plan karein?"
-            )
-            # Offer to add a quick "Take a 5-min reset" task
-            flow = {"mode":"add","step":"due","task":{"name":"Take a 5‑min reset"}}
-            _save_flow(flow)
+            msg = _gen_empathetic_reply_local(transcript, emotion, lang)
+            _save_flow({"mode":"add","step":"due","task":{"name": tr("Take a 5‑minute reset","5‑minute ka reset lo","5‑minute ka reset lo")}})
             return jsonify({"message": msg, "continue_listening": True, "task_added": False})
 
-        # Intent routes (fast paths) — features already supported in your app
+        # Intents
         if intent == "add_task":
             name = normalize_task_name(slots.get("task") or "")
             if name:
-                _save_flow({"mode":"add","step":"due","task":{"name":name}})
-                return jsonify({"message": tr(f"Adding '{name}'. When is it due? Say today, tomorrow, a date, or skip.",
-                                              f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip bolo.",
-                                              f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip bolo."),
+                _save_flow({"mode":"add","step":"due","task":{"name": name}})
+                return jsonify({"message": tr(
+                                    f"Adding ‘{name}’. When is it due? Say today, tomorrow, a date, or skip.",
+                                    f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip.",
+                                    f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip."
+                                ),
                                 "continue_listening": True, "task_added": False})
 
-        if intent == "decompose" and uid:
-            goal = normalize_task_name(slots.get("goal") or "")
-            if goal:
-                _save_flow({"mode":"decompose","step":"ask_due","payload":{"goal":goal}})
-                return jsonify({"message": tr(f"Okay, breaking down '{goal}'. What’s the final due date? Say a date or skip.",
-                                              f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip.",
-                                              f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip."),
-                                "continue_listening": True, "task_added": False})
-            if intent == "list_tasks" and uid:
-             tasks = Task.query.filter_by(user_id=uid).order_by(Task.completed.asc(), Task.id.desc()).all()
+        if intent == "list_tasks" and uid:
+            tasks = Task.query.filter_by(user_id=uid).order_by(Task.completed.asc(), Task.id.desc()).all()
             if not tasks:
-                return jsonify({"message": tr("You have no tasks.","Aapke paas abhi koi tasks nahi hain.","Koi tasks nahi hain."), "continue_listening": False, "task_added": False})
+                return jsonify({"message": tr("You have no tasks.","Aapke paas abhi koi tasks nahi hain.","Koi tasks nahi hain."),
+                                "continue_listening": False, "task_added": False})
             preview = ", ".join(f"{t.name} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
             more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
             return jsonify({"message": tr(f"You have {len(tasks)} tasks: {preview}{more}",
@@ -1313,10 +1713,11 @@ def voice_command():
                 cand.completed = True
                 db.session.commit()
                 _clear_flow()
-                return jsonify({"message": tr(f"Marked '{cand.name}' complete.","‘{cand.name}’ complete kar diya.","‘{cand.name}’ complete ho gaya."),
+                return jsonify({"message": tr(f"Marked ‘{cand.name}’ complete.","‘{cand.name}’ complete kar diya.","‘{cand.name}’ complete ho gaya."),
                                 "continue_listening": False, "task_added": False, "reload_page": True})
-            if intent == "delete_task" and uid and slots.get("task"):
-             q = normalize_task_name(slots["task"])
+
+        if intent == "delete_task" and uid and slots.get("task"):
+            q = normalize_task_name(slots["task"])
             cand = Task.query.filter(Task.user_id==uid, Task.name.ilike(f"%{q}%")).first()
             if cand:
                 title = cand.name
@@ -1325,119 +1726,111 @@ def voice_command():
                 db.session.delete(cand)
                 db.session.commit()
                 _clear_flow()
-                return jsonify({"message": tr(f"Deleted '{title}'.","‘{title}’ delete kar diya.","‘{title}’ delete ho gaya."),
+                return jsonify({"message": tr(f"Deleted ‘{title}’.","‘{title}’ delete kar diya.","‘{title}’ delete ho gaya."),
                                 "continue_listening": False, "task_added": False, "reload_page": True})
 
         if intent == "reschedule" and uid:
-            try: days = int(slots.get("days") or 1)
-            except Exception: days = 1
+            try:
+                days = int(slots.get("days") or 1)
+            except Exception:
+                days = 1
             moved = apply_reschedule(uid, days=days)
             return jsonify({"message": tr(
                                 f"I moved {moved} task(s) by {days} day(s)." if moved else "No tasks to move.",
                                 f"{moved} tasks {days} din ke liye shift kiye." if moved else "Shift karne ko kuch nahi mila.",
                                 f"{moved} tasks {days} din ke liye shift kiye." if moved else "Kuch shift karne ko nahi mila."
-                             ),
-                             "continue_listening": True, "task_added": False, "reload_page": bool(moved)})
+                            ),
+                            "continue_listening": True, "task_added": False, "reload_page": bool(moved)})
 
-        # If not handled by NLU, fall back to your existing flows below
-        # ...existing code of voice_command continues unchanged...
-        # (Keep your ADD/DECOMPOSE/LIST/COMPLETE/DELETE logic already present.)
+        if intent == "decompose" and uid:
+            goal = normalize_task_name(slots.get("goal") or "")
+            if goal:
+                _save_flow({"mode":"decompose","step":"ask_due","payload":{"goal":goal}})
+                return jsonify({"message": tr(
+                                    f"Okay, breaking down ‘{goal}’. What’s the final due date? Say a date or skip.",
+                                    f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip.",
+                                    f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip."
+                                ),
+                                "continue_listening": True, "task_added": False})
 
-    except Exception as e:
-        print("[VOICE ERROR]", e)
-        return jsonify({"message": tr("Sorry — an error occurred.","Maaf kijiye, error aa gaya.","Sorry, error aa gaya."),
-                        "continue_listening": False, "task_added": False}), 500
-
-
-        # Basic guard
-        if not transcript:
-            return jsonify({
-                "message": "I didn’t catch that. Say: add, delete, complete, or list.",
-                "continue_listening": True,
-                "task_added": False
-            })
-
-        # Allow cancel at any time
-        if any(w in tl for w in ("stop", "cancel", "exit", "quit")):
-            _clear_flow()
-            return jsonify({
-                "message": "Voice flow cancelled.",
-                "continue_listening": False,
-                "task_added": False
-            })
-
+        # Flow
         flow = _get_flow()
         mode = flow.get("mode")
         step = flow.get("step")
         task = flow.get("task") or {}
 
-        # ADD FLOW
+        if mode == "reschedule_offer" and step == "confirm" and uid:
+            if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay")):
+                days = int(flow.get("payload",{}).get("days",1))
+                moved = apply_reschedule(uid, days=days)
+                _clear_flow()
+                return jsonify({"message": tr(
+                                    f"Done. I moved {moved} task(s) to tomorrow. Anything else?" if moved else
+                                    "Looks like there are no tasks due today to move.",
+                                    f"Ho gaya! {moved} kaam kal ke liye shift kiye. Aur kuch?" if moved else
+                                    "Aaj shift karne ke liye koi kaam nahi mila.",
+                                    f"Ho gaya! {moved} tasks kal shift kiye. Aur kuch?" if moved else
+                                    "Aaj shift karne ko kuch nahi mila."
+                                ),
+                                "continue_listening": True, "task_added": False, "reload_page": bool(moved)})
+            if any(w in tl for w in ("no","nah","nope","cancel")):
+                _clear_flow()
+                return jsonify({"message": tr("Okay. I’m here if you need anything.",
+                                              "Theek hai. Jab zaroorat ho batao.",
+                                              "Theek hai. Jab zaroorat ho batao."),
+                                "continue_listening": True, "task_added": False})
+            return jsonify({"message": tr("Should I move today’s tasks to tomorrow? Say yes or no.",
+                                          "Kya aaj ke tasks kal kar du? Haan ya na bolo.",
+                                          "Aaj ke tasks kal kar du? Haan ya na bolo."),
+                            "continue_listening": True, "task_added": False})
+
         if mode == "add":
-            # 1) Title
             if step == "title":
-                # allow the user to speak full title (fallback to raw transcript)
                 title_guess = _title_from_transcript(tl) or transcript
                 title = (title_guess or "").strip()
                 if not title:
-                    return jsonify({
-                        "message": "Say the task name, like 'buy milk'.",
-                        "continue_listening": True,
-                        "task_added": False
-                    })
+                    return jsonify({"message": tr("Say the task name, like ‘buy milk’.",
+                                                  "Task ka naam bolo, jaise ‘doodh lena’.",
+                                                  "Task ka naam bolo, jaise ‘buy milk’."),
+                                    "continue_listening": True, "task_added": False})
                 task["name"] = title
                 flow["step"] = "due"
                 flow["task"] = task
                 _save_flow(flow)
-                return jsonify({
-                    "message": f"Adding '{title}'. When is it due? Say 'today', 'tomorrow', a date, 'in 2 days', or 'skip'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # 2) Due (save raw text here; parse only on save)
+                return jsonify({"message": tr(
+                                    f"Adding ‘{title}’. When is it due? Say today, tomorrow, a date, or skip.",
+                                    f"‘{title}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip.",
+                                    f"‘{title}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip."
+                                ),
+                                "continue_listening": True, "task_added": False})
             if step == "due":
                 task["due_text"] = None if "skip" in tl else transcript
                 flow["step"] = "time"
                 flow["task"] = task
                 _save_flow(flow)
-                return jsonify({
-                    "message": "What time? Say a time like 'at 5 pm' or say 'skip'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # 3) Time
+                return jsonify({"message": tr("What time? Say ‘5 pm’ or say ‘skip’.",
+                                              "Kaunsa time? ‘5 baje’ bolo ya ‘skip’.",
+                                              "Kaunsa time? ‘5 pm’ bolo ya ‘skip’."),
+                                "continue_listening": True, "task_added": False})
             if step == "time":
                 task["time_text"] = None if "skip" in tl else transcript
                 flow["step"] = "category"
                 flow["task"] = task
                 _save_flow(flow)
-                return jsonify({
-                    "message": "Which category? Work, Personal, Study, Health, or say 'skip'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # 4) Category
+                return jsonify({"message": tr("Which category? Work, Personal, Study, Health, or say ‘skip’.",
+                                              "Kaunsi category? Work, Personal, Study, Health, ya ‘skip’.",
+                                              "Kaunsi category? Work, Personal, Study, Health, ya ‘skip’."),
+                                "continue_listening": True, "task_added": False})
             if step == "category":
-                if "skip" in tl:
-                    cat = "Other"
-                elif "work" in tl:
-                    cat = "Work"
-                elif "personal" in tl:
-                    cat = "Personal"
-                elif "study" in tl or "education" in tl:
-                    cat = "Study"
-                elif "health" in tl or "fitness" in tl:
-                    cat = "Health"
-                else:
-                    cat = transcript.strip().title() or "Other"
+                if "skip" in tl: cat = "Other"
+                elif "work" in tl: cat = "Work"
+                elif "personal" in tl: cat = "Personal"
+                elif "study" in tl or "education" in tl: cat = "Study"
+                elif "health" in tl or "fitness" in tl: cat = "Health"
+                else: cat = transcript.strip().title() or "Other"
                 task["category"] = cat
-                # Parse due and time
                 parsed_due = parse_due_date(task.get("due_text")) if task.get("due_text") else None
                 parsed_time = parse_task_time(task.get("time_text")) if task.get("time_text") else None
-
-                # Create and save task immediately
                 new_task = Task(
                     name=task.get("name"),
                     due_date=parsed_due,
@@ -1445,119 +1838,43 @@ def voice_command():
                     category=task.get("category", "Other"),
                     priority=classify_priority(task.get("name") or ""),
                     reminder_time=(datetime.combine(parsed_due, parsed_time) if (parsed_due and parsed_time) else None),
-                    user_id=session.get("user_id")
-             )
+                    user_id=uid
+                )
                 db.session.add(new_task)
                 db.session.commit()
-
-                new_task_data = {
-                    "id": new_task.id,
-                    "name": new_task.name,
-                    "due_date": new_task.due_date.isoformat() if new_task.due_date else None,
-                    "task_time": new_task.task_time.strftime("%H:%M:%S") if new_task.task_time else None,
-                    "category": new_task.category,
-                    "completed": bool(new_task.completed),
-                }
-
                 _clear_flow()
-                return jsonify({
-                      "message": f"Task '{new_task.name}' saved.",
-                      "continue_listening": False,
-                      "task_added": True,
-                      "reload_page": True,
-                      "new_task": new_task_data
-             })
-            
-        # RESCHEDULE OFFER FLOW
-        if mode == "reschedule_offer" and step == "confirm" and uid:
-            if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay")):
-                days = int(flow.get("payload",{}).get("days",1))
-                moved = apply_reschedule(uid, days=days)
-                _clear_flow()
-                if moved:
-                    return jsonify({
-                        "message": f"Done. I moved {moved} task(s) to tomorrow. Anything else?",
-                        "continue_listening": True,
-                        "task_added": False,
-                        "reload_page": True
-                    })
-                else:
-                    return jsonify({
-                        "message": "Looks like there are no tasks due today to move.",
-                        "continue_listening": True,
-                        "task_added": False
-                    })
-            elif any(w in tl for w in ("no","nah","nope","cancel")):
-                _clear_flow()
-                return jsonify({
-                    "message": "Okay. I’m here if you need anything.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            else:
-                return jsonify({
-                    "message": "Should I move today’s tasks to tomorrow? Say yes or no.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
+                return jsonify({"message": tr(f"Task ‘{new_task.name}’ saved.",
+                                              f"‘{new_task.name}’ save ho gaya.",
+                                              f"‘{new_task.name}’ save ho gaya."),
+                                "continue_listening": False, "task_added": True, "reload_page": True})
 
-          # DIRECT RESCHEDULE INTENT (e.g., “reschedule/postpone today’s tasks”)
-        if any(k in tl for k in ("reschedule","postpone","move tasks")) and uid:
-            moved = apply_reschedule(uid, days=1)
-            _clear_flow()
-            if moved:
-                return jsonify({
-                    "message": f"I moved {moved} task(s) to tomorrow. Want anything else?",
-                    "continue_listening": True,
-                    "task_added": False,
-                    "reload_page": True
-                })
-            else:
-                return jsonify({
-                    "message": "No tasks due today to move.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-        # DECOMPOSE FLOW (Smart Task Decomposition)
         if mode == "decompose" and uid:
-            # step: ask_goal -> capture goal
             if step == "ask_goal":
                 goal = transcript.strip()
-                if not goal or goal in {"skip", "cancel"}:
+                if not goal or goal in {"skip","cancel"}:
                     _clear_flow()
-                    return jsonify({
-                        "message": "Okay, cancelled.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
+                    return jsonify({"message": tr("Okay, cancelled.","Theek hai, cancel.","Theek hai, cancel."),
+                                    "continue_listening": False, "task_added": False})
                 flow["payload"] = {"goal": goal}
                 flow["step"] = "ask_due"
                 _save_flow(flow)
-                return jsonify({
-                    "message": "Got it. What’s the final due date? Say 'today', 'tomorrow', a date like '2025-11-05', or say 'skip'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # step: ask_due -> capture due date text (parse later)
+                return jsonify({"message": tr("Got it. What’s the final due date? Say today, tomorrow, a date, or skip.",
+                                              "Samajh gaya. Final due date bolo: aaj, kal, koi date, ya skip.",
+                                              "Samajh gaya. Final due date bolo: aaj, kal, koi date, ya skip."),
+                                "continue_listening": True, "task_added": False})
             if step == "ask_due":
                 flow.setdefault("payload", {})
                 flow["payload"]["due_text"] = None if "skip" in tl else transcript
                 flow["step"] = "ask_time"
                 _save_flow(flow)
-                return jsonify({
-                    "message": "What time should I target for these subtasks? Say a time like '5 pm', or say 'skip' to stagger automatically.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # step: ask_time -> preview and ask confirm
+                return jsonify({"message": tr("What time should I target? Say a time like ‘5 pm’, or say ‘skip’.",
+                                              "Kaunsa time rakhein? ‘5 baje’ bolo ya ‘skip’.",
+                                              "Kaunsa time rakhein? ‘5 pm’ bolo ya ‘skip’."),
+                                "continue_listening": True, "task_added": False})
             if step == "ask_time":
                 payload = flow.get("payload", {})
                 payload["time_text"] = None if "skip" in tl else transcript
                 goal = payload.get("goal", "")
-                # preview subtasks
                 preview = decompose_goal_text(goal)
                 names = [s["name"] for s in preview][:5]
                 more = "" if len(preview) <= 5 else f" and {len(preview)-5} more"
@@ -1565,18 +1882,14 @@ def voice_command():
                 flow["step"] = "confirm"
                 _save_flow(flow)
                 if not names:
-                    return jsonify({
-                        "message": "Couldn’t generate subtasks. Try rephrasing the goal.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
-                return jsonify({
-                    "message": f"I suggest: {', '.join(names)}{more}. Should I create these?",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-            # step: confirm -> yes/no
+                    return jsonify({"message": tr("Couldn’t generate subtasks. Try rephrasing the goal.",
+                                                  "Subtasks nahi ban paaye. Thoda aur clear bolo.",
+                                                  "Subtasks nahi ban paaye. Thoda aur clear bolo."),
+                                    "continue_listening": False, "task_added": False})
+                return jsonify({"message": tr(f"I suggest: {', '.join(names)}{more}. Should I create these?",
+                                              f"Meri suggestion: {', '.join(names)}{more}. Bana du?",
+                                              f"Suggestion: {', '.join(names)}{more}. Bana du?"),
+                                "continue_listening": True, "task_added": False})
             if step == "confirm":
                 if any(w in tl for w in ("yes","yeah","yup","sure","ok","okay","do it","confirm")):
                     payload = flow.get("payload", {})
@@ -1587,191 +1900,33 @@ def voice_command():
                     _clear_flow()
                     count = result.get("count", 0)
                     if count:
-                        return jsonify({
-                            "message": f"Done. I created {count} subtasks for '{goal}'.",
-                            "continue_listening": False,   # stop listening to avoid “stuck”
-                            "task_added": True,            # signal success to UI
-                            "reload_page": True            # refresh to show new tasks
-                        })
-                    return jsonify({
-                        "message": "I couldn’t create the subtasks.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
-                elif any(w in tl for w in ("no","nah","nope","cancel")):
+                        return jsonify({"message": tr(f"Done. I created {count} subtasks for ‘{goal}’.",
+                                                      f"Ho gaya. ‘{goal}’ ke {count} subtasks bana diye.",
+                                                      f"Ho gaya. ‘{goal}’ ke {count} subtasks bana diye."),
+                                        "continue_listening": False, "task_added": True, "reload_page": True})
+                    return jsonify({"message": tr("I couldn’t create the subtasks.",
+                                                  "Subtasks nahi ban paaye.",
+                                                  "Subtasks nahi ban paaye."),
+                                    "continue_listening": False, "task_added": False})
+                if any(w in tl for w in ("no","nah","nope","cancel")):
                     _clear_flow()
-                    return jsonify({
-                        "message": "Cancelled.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
-                else:
-                    return jsonify({
-                        "message": "Should I create these subtasks? Say yes or no.",
-                        "continue_listening": True,
-                        "task_added": False
-                    })
+                    return jsonify({"message": tr("Cancelled.","Cancel kiya.","Cancel kiya."),
+                                    "continue_listening": False, "task_added": False})
+                return jsonify({"message": tr("Should I create these subtasks? Say yes or no.",
+                                              "Bana du? Haan ya na bolo.",
+                                              "Bana du? Haan ya na bolo."),
+                                "continue_listening": True, "task_added": False})
 
-
-        # DIRECT DECOMPOSE INTENT (no active flow)
-        if uid and any(k in tl for k in (
-            "break this down","break it down","break down","decompose",
-            "make subtasks","split into tasks","plan this","plan for"
-        )):
-            goal = _extract_goal_from_transcript(tl)
-            if not goal:
-                # Try most recent top-level task as the goal
-                recent = _recent_goal_candidate(uid)
-                if recent:
-                    # seed payload with recent's data
-                    flow = {"mode": "decompose", "step": "ask_time", "payload": {
-                        "goal": recent.name,
-                        "due_text": recent.due_date.strftime("%Y-%m-%d") if recent.due_date else None
-                    }}
-                    _save_flow(flow)
-                    return jsonify({
-                        "message": f"Breaking down '{recent.name}'. What time should I target, or say 'skip' to stagger automatically?",
-                        "continue_listening": True,
-                        "task_added": False
-                    })
-                # Ask user for the goal
-                _save_flow({"mode": "decompose", "step": "ask_goal", "payload": {}})
-                return jsonify({
-                    "message": "What goal would you like me to break down?",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            else:
-                # We have the goal from transcript; ask due date next
-                _save_flow({"mode": "decompose", "step": "ask_due", "payload": {"goal": goal}})
-                return jsonify({
-                    "message": f"Okay, breaking down '{goal}'. What’s the final due date? Say a date or 'skip'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-        # DELETE / REMOVE 
-        if "delete" in tl or "remove" in tl:
-            if not uid:
-                return jsonify({"message": "Please log in first.", "continue_listening": False, "task_added": False})
-            keyword = "delete" if "delete" in tl else "remove"
-            name = tl.split(keyword, 1)[1].strip() if keyword in tl else ""
-            if not name:
-                return jsonify({"message": "Which task should I delete?", "continue_listening": True, "task_added": False})
-            candidate = Task.query.filter(Task.user_id == uid, Task.name.ilike(f"%{name}%")).first()
-            if not candidate:
-                return jsonify({
-                    "message": f"I couldn’t find '{name}'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            title = candidate.name
-            db.session.delete(candidate)
-            db.session.commit()
-            _clear_flow()
-            return jsonify({
-                "message": f"Deleted '{title}'.",
-                "continue_listening": False,
-                "task_added": False,
-                "reload_page": True
-            })
-
-        # COMPLETE
-        if "complete" in tl or "finish" in tl or "done" in tl:
-            if not uid:
-                return jsonify({"message": "Please log in first.", "continue_listening": False, "task_added": False})
-            name = ""
-            for k in ("complete", "finish", "done"):
-                if k in tl:
-                    parts = tl.split(k, 1)
-                    if len(parts) > 1:
-                        name = parts[1].strip()
-                    break
-            if not name:
-                incompletes = Task.query.filter(Task.completed == False).limit(3).all()
-                if not incompletes:
-                    return jsonify({
-                        "message": "You have no incomplete tasks.",
-                        "continue_listening": False,
-                        "task_added": False
-                    })
-                names = ", ".join(t.name for t in incompletes)
-                return jsonify({
-                    "message": f"Which task should I complete? You have: {names}.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            cand = Task.query.filter(Task.name.ilike(f"%{name}%"), Task.completed == False).first()
-            if not cand:
-                return jsonify({
-                    "message": f"I couldn’t find '{name}'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            cand.completed = True
-            db.session.commit()
-            _clear_flow()
-            return jsonify({
-                "message": f"Marked '{cand.name}' complete.",
-                "continue_listening": False,
-                "task_added": False,
-                "reload_page": True
-            })
-
-        # LIST 
-        if "list" in tl or "show" in tl:
-            if not uid:
-                return jsonify({"message": "Please log in first.", "continue_listening": False, "task_added": False})
-            tasks = Task.query.filter_by(user_id=uid).order_by(Task.completed.asc(), Task.id.desc()).all()
-            if not tasks:
-                return jsonify({
-                    "message": "You have no tasks.",
-                    "continue_listening": False,
-                    "task_added": False
-                })
-            preview = ", ".join(f"{t.name} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
-            more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
-            return jsonify({
-                "message": f"You have {len(tasks)} tasks: {preview}{more}",
-                "continue_listening": False,
-                "task_added": False
-            })
-
-        # START ADD FLOW (initial) 
-        if "add" in tl or "create" in tl or "new task" in tl:
-            name = _title_from_transcript(tl)
-            if name:
-                flow = {"mode": "add", "step": "due", "task": {"name": name}}
-                _save_flow(flow)
-                return jsonify({
-                    "message": f"Adding '{name}'. When is it due? Say 'today', 'tomorrow', a date, or 'skip'.",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-            else:
-                flow = {"mode": "add", "step": "title", "task": {}}
-                _save_flow(flow)
-                return jsonify({
-                    "message": "Sure. What task do you want to add?",
-                    "continue_listening": True,
-                    "task_added": False
-                })
-
-        # FALLBACK
-        return jsonify({
-            "message": "Try: 'add buy milk', 'delete <task>', 'complete <task>', or 'list tasks'.",
-            "continue_listening": True,
-            "task_added": False
-        })
+        # Final fallback (always)
+        msg = _gen_empathetic_reply_local(transcript, emotion, lang)
+        return jsonify({"message": msg, "continue_listening": True, "task_added": False})
 
     except Exception as e:
         print("[VOICE ERROR]", e)
-        # keep friendly error message for front-end
-        return jsonify({
-            "message": "Sorry — an error occurred processing that voice command.",
-            "continue_listening": False,
-            "task_added": False
-        }), 500
+        return jsonify({"message": tr("Sorry — an error occurred. Try again.",
+                                      "Maaf kijiye, kuch gadbad ho gayi. Dobara koshish karein.",
+                                      "Sorry, thoda issue aaya. Dubara try karo."),
+                        "continue_listening": True, "task_added": False}), 200
 
 # ---- Voice prefs (lang + gender) in session ----
 def get_voice_prefs():
