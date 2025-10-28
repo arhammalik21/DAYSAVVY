@@ -12,7 +12,6 @@ import hashlib
 from collections import OrderedDict
 from gtts import gTTS
 import pygame
-import groq
 
 # Flask + extensions
 from flask import (
@@ -233,6 +232,46 @@ def reminder_checker():
                 db.session.commit()
         time_mod.sleep(60)
 
+# A talk with Emotion
+@app.route("/voice/chat", methods=["POST"])
+def voice_chat():
+    """
+    Accepts: { "message": "user says something" }
+    Returns: { "reply": "AI's reply" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    user_msg = (data.get("message") or "").strip()
+    if not user_msg:
+        return jsonify({"reply": "Say something and I’ll reply!"})
+
+    # Use Groq LLM for generative chat
+    if _groq:
+        try:
+            # You can customize the system prompt for personality
+            sys_prompt = (
+                "You are DaySavvy, a friendly, helpful, and gentle productivity assistant. "
+                "You can chat about anything, help with tasks, listen to feelings, and keep the conversation going naturally. "
+                "Reply in a warm, human-like, casual tone. If the user seems stressed or sad, offer encouragement or a reset. "
+                "If they mention tasks or goals, you can help break them down or add them."
+            )
+            resp = _groq.chat.completions.create(
+                model=os.getenv("GROQ_MODEL", "llama-3-8b"),
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_msg}
+                ],
+                temperature=0.7,
+                max_tokens=300,
+            )
+            reply = resp.choices[0].message.content.strip()
+            return jsonify({"reply": reply})
+        except Exception as e:
+            print("[Chat][Groq] error:", e)
+            return jsonify({"reply": "Sorry, I had trouble thinking of a reply. Try again?"})
+
+    # Fallback: echo
+    return jsonify({"reply": "I'm here to chat! (Groq not configured)"})
+
 # Voice Command Constants & Globals
 STOP_WORDS = {"stop", "cancel", "exit", "quit", "thanks"}
 AUTO_STOP_PHRASES = {
@@ -268,6 +307,24 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
+
+# TTS Endpoint using gTTS
+@app.route("/voice/tts", methods=["POST"])
+def voice_tts():
+    data = request.get_json(force=True, silent=True) or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return Response(b"", mimetype="audio/mpeg")
+    lang = (data.get("lang") or "en").lower()
+    try:
+        fp = io.BytesIO()
+        gTTS(text=text, lang=("hi" if lang=="hi" else "en"), slow=False).write_to_fp(fp)
+        fp.seek(0)
+        audio = fp.read()
+        return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+    except Exception as e:
+        print("[TTS][gTTS] error:", e)
+        return Response(b"", mimetype="audio/mpeg", status=500)
 
 # Gentle smalltalk without external LLM (works offline/quota-free)
 def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
@@ -1256,6 +1313,28 @@ def voice_command_legacy():
                                 "continue_listening": True, "task_added": False})
 
         # Unknown → gentle fallback
+        if _groq:
+            try:
+                sys_prompt = (
+                    "You are DaySavvy, a friendly, helpful, and gentle productivity assistant. "
+                    "You can chat about anything, help with tasks, listen to feelings, and keep the conversation going naturally. "
+                    "Reply in a warm, human-like, casual tone. If the user seems stressed or sad, offer encouragement or a reset. "
+                    "If they mention tasks or goals, you can help break them down or add them."
+                )
+                resp = _groq.chat.completions.create(
+                    model=os.getenv("GROQ_MODEL", "llama-3-8b"),
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": transcript}
+                    ],
+                    temperature=0.7,
+                    max_tokens=300,
+                )
+                reply = resp.choices[0].message.content.strip()
+                return jsonify({"message": reply, "continue_listening": True, "task_added": False})
+            except Exception as e:
+                print("[Chat][Groq] error:", e)
+        # If Groq not available, fallback to local
         msg = _gen_empathetic_reply_local(transcript, emotion, lang)
         return jsonify({"message": msg, "continue_listening": True, "task_added": False})
 
@@ -1265,7 +1344,6 @@ def voice_command_legacy():
                                       "Maaf kijiye, kuch gadbad ho gayi. Dobara koshish karein.",
                                       "Sorry, thoda issue aaya. Dubara try karo."),
                         "continue_listening": True, "task_added": False}), 200
-
 
 # Words used for yes/no checks
 YES_WORDS = {"yes", "yeah", "yup", "sure", "correct", "save", "affirmative"}
@@ -1658,7 +1736,29 @@ def voice_command():
                                               "Bana du? Haan ya na bolo."),
                                 "continue_listening": True, "task_added": False})
 
-        # Final fallback (always)
+# Final fallback (always)
+        if _groq:
+            try:
+                sys_prompt = (
+                    "You are DaySavvy, a friendly, helpful, and gentle productivity assistant. "
+                    "You can chat about anything, help with tasks, listen to feelings, and keep the conversation going naturally. "
+                    "Reply in a warm, human-like, casual tone. If the user seems stressed or sad, offer encouragement or a reset. "
+                    "If they mention tasks or goals, you can help break them down or add them."
+                )
+                resp = _groq.chat.completions.create(
+                    model=os.getenv("GROQ_MODEL", "llama-3-8b"),
+                    messages=[
+                        {"role": "system", "content": sys_prompt},
+                        {"role": "user", "content": transcript}
+                    ],
+                    temperature=0.7,
+                    max_tokens=300,
+                )
+                reply = resp.choices[0].message.content.strip()
+                return jsonify({"message": reply, "continue_listening": True, "task_added": False})
+            except Exception as e:
+                print("[Chat][Groq] error:", e)
+        # If Groq not available, fallback to local
         msg = _gen_empathetic_reply_local(transcript, emotion, lang)
         return jsonify({"message": msg, "continue_listening": True, "task_added": False})
 

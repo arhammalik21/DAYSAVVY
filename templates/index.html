@@ -372,19 +372,48 @@ function stopVoiceControl(){
 function listenOnce(){
   if (!isListening) return;
   recognition = createRecognition();
-  if (!recognition){ document.getElementById('voiceStatus').textContent='❌ Speech not supported. Use Chrome.'; return stopVoiceControl(); }
+  if (!recognition){
+    document.getElementById('voiceStatus').textContent='❌ Speech not supported. Use Chrome.';
+    return stopVoiceControl();
+  }
   recognition.onstart  = () => document.getElementById('voiceStatus').textContent = '🎤 Listening…';
-  recognition.onerror  = (e) => { document.getElementById('voiceStatus').textContent = '❌ ' + e.error; if (e.error==='no-speech' && isListening){ setTimeout(listenOnce, 400); } else { stopVoiceControl(); } };
+  recognition.onerror  = (e) => {
+    document.getElementById('voiceStatus').textContent = '❌ ' + e.error;
+    if (e.error==='no-speech' && isListening){ setTimeout(listenOnce, 400); }
+    else { stopVoiceControl(); }
+  };
   recognition.onresult = async (ev) => {
     const transcript = ev.results[0][0].transcript.trim();
     document.getElementById('voiceStatus').textContent = `⏳ “${transcript}”`;
     try {
-      const r = await fetch('/voice/command', {
+      // Try command endpoint first
+      let r = await fetch('/voice/command', {
         method:'POST',
         headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
         credentials:'same-origin',
         body: JSON.stringify({ transcript })
       }).then(x=>x.json());
+
+      // If not recognized as a command, fallback to generative chat
+    if (
+      r && r.message &&
+      (
+        r.message.toLowerCase().includes("didn’t catch that") ||
+        r.message.toLowerCase().includes("samajh nahi aaya") ||
+        r.message.toLowerCase().includes("phir bolo") ||
+        r.message.toLowerCase().includes("say it again")
+      )
+    ) {
+        // Fallback to generative AI
+      r = await fetch('/voice/chat', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','X-CSRFToken': csrfToken},
+        credentials:'same-origin',
+        body: JSON.stringify({ message: transcript })
+      }).then(x=>x.json());
+      r.message = r.reply;
+    }
+
       await speakText(r.message || 'OK');
       document.getElementById('voiceStatus').textContent = r.message || '✓';
       if (r.reload_page) { location.reload(); return; }
