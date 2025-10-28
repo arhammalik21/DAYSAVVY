@@ -8,6 +8,11 @@ import math
 from datetime import datetime, date, timedelta, time as dt_time
 from typing import Optional, Dict, Any, Tuple
 from werkzeug.security import generate_password_hash, check_password_hash
+import hashlib
+from collections import OrderedDict
+from gtts import gTTS
+import pygame
+import groq
 
 # Flask + extensions
 from flask import (
@@ -26,20 +31,6 @@ from flask import (
     Flask, render_template, redirect, url_for, flash, abort, request,
     jsonify, session, send_from_directory, Response  # add Response
 )
-
-# Optional libs 
-try:
-    import openai
-except Exception:
-    openai = None
-
-try:
-    from gtts import gTTS
-    import pygame
-except Exception:
-    gTTS = None
-    pygame = None
-
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 CORS(app)
@@ -68,6 +59,163 @@ def get_csrf_token():
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
+# Voice Components
+try:
+    from groq import Groq
+    _groq = Groq(api_key=os.getenv("GROQ_API_KEY")) if os.getenv("GROQ_API_KEY") else None
+except Exception:
+    _groq = None
+
+def _json_from_text(s: str) -> dict:
+    try:
+        return json.loads(s or "")
+    except Exception:
+        if not s:
+            return {}
+        i, j = s.find("{"), s.rfind("}")
+        if i != -1 and j != -1 and j > i:
+            try:
+                return json.loads(s[i:j+1])
+            except Exception:
+                return {}
+        return {}
+
+def nlu_understand(text: str, lang: str = "hinglish") -> dict:
+    t = (text or "").strip()
+    if not t:
+        return {"intent":"unknown","slots":{}}
+    # Use Groq if available
+    if _groq:
+        try:
+            sys_prompt = (
+                "Extract the user's intent for a task manager.\n"
+                "Intents: add_task, complete_task, delete_task, list_tasks, decompose, reschedule, smalltalk, unknown.\n"
+                "Slots: task, goal, due, time, category, days.\n"
+                "User may speak English, Hindi, or Hinglish. Return ONLY compact JSON."
+            )
+            resp = _groq.chat.completions.create(
+                model=os.getenv("GROQ_MODEL","llama-3-8b"),
+                messages=[{"role":"system","content":sys_prompt},{"role":"user","content":t}],
+                temperature=0.2, max_tokens=200,
+            )
+            data = _json_from_text(resp.choices[0].message.content)
+            if isinstance(data, dict) and data.get("intent"):
+                return data
+        except Exception as e:
+            print("[NLU][Groq] error:", e)
+    # Heuristic fallback
+    tl = t.lower()
+    if any(k in tl for k in ("break it down","break this down","break down","decompose","subtask","plan this","plan for","tordo","tod do","toad do","tode do","tod do","toda do","toda do")):
+        return {"intent":"decompose","slots":{"goal": t}}
+    if any(k in tl for k in ("add","create","new task","add task","jodo","kaam jodo","task jodo","naya kaam")):
+        return {"intent":"add_task","slots":{"task": _title_from_transcript(tl) or t}}
+    if any(k in tl for k in ("delete","remove","mitao","hatado","hata do","delete kar do")):
+        return {"intent":"delete_task","slots":{"task": tl.split("delete",1)[-1].strip() or tl.split("remove",1)[-1].strip()}}
+    if any(k in tl for k in ("complete","finish","done","khatam","poora","ho gaya")):
+        return {"intent":"complete_task","slots":{"task": tl.replace("complete","").replace("finish","").replace("done","").strip()}}
+    if any(k in tl for k in ("list","show","tasks","dikhado","list dikhao","kaam dikhao")):
+        return {"intent":"list_tasks","slots":{}}
+    if any(k in tl for k in ("reschedule","postpone","move tasks","kal kar do","tomorrow","shift karo")):
+        return {"intent":"reschedule","slots":{"days":"1"}}
+    if any(k in tl for k in ("stressed","anxious","sad","tired","lonely","down","overwhelmed","bura lag")):
+        return {"intent":"smalltalk","slots":{"mood":"low"}}
+    return {"intent":"unknown","slots":{}}
+
+def detect_emotion(text: str) -> tuple:
+    t = (text or "").lower().strip()
+    if not t:
+        return ("neutral", 0.0)
+    # Use Groq if available
+    if _groq:
+        try:
+            resp = _groq.chat.completions.create(
+                model=os.getenv("GROQ_MODEL","llama-3-8b"),
+                messages=[{"role":"system","content":"Classify emotion: stressed, sad, tired, positive, neutral. Return JSON {\"emotion\":\"...\",\"score\":0-1}."},
+                          {"role":"user","content": t}],
+                temperature=0.1, max_tokens=40,
+            )
+            data = _json_from_text(resp.choices[0].message.content)
+            emo = str(data.get("emotion","neutral")).lower()
+            score = float(data.get("score", 0.6))
+            if emo not in {"stressed","sad","tired","positive","neutral"}:
+                emo = "neutral"
+            return (emo, max(0.0, min(score, 1.0)))
+        except Exception as e:
+            print("[Emotion][Groq] error:", e)
+    # Lexicon fallback
+    NEG_STRESS = {"overwhelmed","stress","stressed","anxious","panic","pressure","burnout","burned out","busy","too much"}
+    NEG_SAD    = {"sad","down","upset","depressed","cry","lonely","hurt","bad day"}
+    NEG_TIRED  = {"tired","exhausted","fatigued","sleepy","drained","worn out","not well","sick","headache"}
+    POSITIVE   = {"great","good","awesome","amazing","excited","happy","fantastic","love"}
+    if any(w in t for w in NEG_STRESS): return ("stressed", 0.8)
+    if any(w in t for w in NEG_SAD):    return ("sad", 0.8)
+    if any(w in t for w in NEG_TIRED):  return ("tired", 0.8)
+    if any(w in t for w in POSITIVE):   return ("positive", 0.7)
+    return ("neutral", 0.5)
+
+def decompose_goal_text(goal_text: str) -> list:
+    text = (goal_text or "").strip()
+    if not text:
+        return []
+    # Use Groq if available
+    if _groq:
+        try:
+            prompt = (
+                "Break the user's goal into a small, actionable checklist of 3-7 subtasks.\n"
+                "Return ONLY JSON: {\"subtasks\":[{\"name\":\"...\"}, ...]}.\n"
+                f"Goal: {text}"
+            )
+            resp = _groq.chat.completions.create(
+                model=os.getenv("GROQ_MODEL","llama-3-8b"),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=220,
+                temperature=0.4,
+            )
+            data = _json_from_text(resp.choices[0].message.content)
+            subs = data.get("subtasks", []) if isinstance(data, dict) else []
+            out = []
+            for s in subs:
+                name = (s.get("name") or "").strip()
+                if name:
+                    out.append({"name": name})
+            if out:
+                return out
+        except Exception as e:
+            print("[Decompose][Groq] error:", e)
+    # Fallback rules
+    t = text.lower()
+    if any(k in t for k in ("exam","midterm","test")):
+        return [
+            {"name": "Outline exam topics"},
+            {"name": "Make formula/definition sheet"},
+            {"name": "Solve last year’s paper"},
+            {"name": "Review mistakes and weak areas"},
+        ]
+    if any(k in t for k in ("presentation","deck","slides")):
+        return [
+            {"name": "Define key message and outline"},
+            {"name": "Draft slides"},
+            {"name": "Design visuals and charts"},
+            {"name": "Add speaker notes"},
+            {"name": "Rehearse twice"},
+        ]
+    if any(k in t for k in ("trip","travel")):
+        return [
+            {"name": "Set dates and budget"},
+            {"name": "Book flights/trains"},
+            {"name": "Reserve hotel"},
+            {"name": "Create itinerary"},
+            {"name": "Pack essentials checklist"},
+        ]
+    return [
+        {"name": "Clarify the goal and success criteria"},
+        {"name": "List required resources"},
+        {"name": "Draft a plan with milestones"},
+        {"name": "Execute first milestone"},
+        {"name": "Review and adjust next steps"},
+    ]
+
+
 # Background task for reminders
 import time as time_mod
 def reminder_checker():
@@ -95,7 +243,6 @@ AUTO_STOP_PHRASES = {
 # session key for conversation FSM
 SESSION_CONV_KEY = 'conversation_state'
 
-
 # Models
 class Task(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -121,191 +268,6 @@ class User(db.Model):
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
-
-# OpenAI neural TTS client (optional; safe if not installed)
-try:
-    from openai import OpenAI
-    _oa_client = OpenAI()
-except Exception:
-    _oa_client = None
-
-def _choose_tts_voice(lang: str, gender: str) -> str:
-    # Gentle defaults: 'verse' (female-ish), 'alloy' (male-ish)
-    return "alloy" if (gender or "").lower() == "male" else "verse"
-
-@app.route("/voice/tts-basic", methods=["POST"])  
-def voice_tts_basic():  
-    """
-    POST {text, lang, gender} -> mp3 audio bytes
-    Uses OpenAI gpt-4o-mini-tts if available; falls back to gTTS.
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        text = (data.get("text") or "").strip()
-        if not text:
-            return Response(b"", mimetype="audio/mpeg")
-
-        prefs_lang = session.get("voice_lang", "hinglish")
-        prefs_gender = session.get("voice_gender", "female")
-        lang = (data.get("lang") or prefs_lang).lower()
-        gender = (data.get("gender") or prefs_gender).lower()
-        voice = _choose_tts_voice(lang, gender)
-
-        # OpenAI neural TTS (requires openai>=1.x and OPENAI_API_KEY)
-        if _oa_client and os.getenv("OPENAI_API_KEY"):
-            try:
-                res = _oa_client.audio.speech.create(
-                    model="gpt-4o-mini-tts",
-                    voice=voice,
-                    input=text,
-                    format="mp3",
-                )
-                audio_bytes = res.read()
-                return Response(audio_bytes, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            except Exception as e:
-                print("[TTS] OpenAI error:", e)
-
-        # Fallback: gTTS (en/hi basic)
-        if gTTS:
-            fp = io.BytesIO()
-            try:
-                gTTS(text=text, lang=("hi" if lang == "hi" else "en"), slow=False).write_to_fp(fp)
-                fp.seek(0)
-                return Response(fp.read(), mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            except Exception as e:
-                print("[TTS] gTTS error:", e)
-
-        return Response(b"", mimetype="audio/mpeg")
-    except Exception as e:
-        print("[TTS] route error:", e)
-        return Response(b"", mimetype="audio/mpeg", status=500)
-
-# Azure Speech SDK
-import hashlib
-from collections import OrderedDict
-import importlib
-try:
-    speechsdk = importlib.import_module("azure.cognitiveservices.speech")
-except Exception:
-    speechsdk = None
-
-
-# Small in-memory LRU cache for TTS audio
-_TTS_CACHE = OrderedDict()
-_TTS_CACHE_MAX = 256  # entries
-
-def _tts_cache_key(provider: str, voice: str, text: str) -> str:
-    return hashlib.sha256(f"{provider}|{voice}|{text}".encode("utf-8")).hexdigest()
-
-def _tts_cache_get(key: str):
-    if key in _TTS_CACHE:
-        _TTS_CACHE.move_to_end(key)
-        return _TTS_CACHE[key]
-    return None
-
-def _tts_cache_put(key: str, value: bytes):
-    _TTS_CACHE[key] = value
-    _TTS_CACHE.move_to_end(key)
-    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
-        _TTS_CACHE.popitem(last=False)
-
-def _azure_voice_shortname(lang: str, gender: str) -> str:
-    lg = (lang or "hinglish").lower()
-    gd = (gender or "female").lower()
-    if lg == "hi":
-        return "hi-IN-MadhurNeural" if gd == "male" else "hi-IN-SwaraNeural"
-    if lg == "en":
-        return "en-US-GuyNeural" if gd == "male" else "en-US-JennyNeural"
-    # Hinglish → Indian English
-    return "en-IN-PrabhatNeural" if gd == "male" else "en-IN-NeerjaNeural"
-
-def _openai_voice_name(lang: str, gender: str) -> str:
-    return "alloy" if (gender or "").lower() == "male" else "verse"
-
-@app.route("/voice/tts-openai-basic", methods=["POST"])
-def voice_tts_openai_basic():
-    """
-    POST {text, lang, gender} -> mp3
-    Provider order: Azure (if configured) → OpenAI → gTTS → empty
-    Cached in-memory by (provider, voice, text).
-    """
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        text = (data.get("text") or "").strip()
-        if not text:
-            return Response(b"", mimetype="audio/mpeg")
-
-        lang = (data.get("lang") or session.get("voice_lang", "hinglish")).lower()
-        gender = (data.get("gender") or session.get("voice_gender", "female")).lower()
-
-        provider = os.getenv("TTS_PROVIDER", "auto").lower()
-        azure_key = os.getenv("AZURE_SPEECH_KEY")
-        azure_region = os.getenv("AZURE_SPEECH_REGION")
-
-        # 1) Azure Speech
-        if (provider in ("auto", "azure")) and speechsdk and azure_key and azure_region:
-            voice = _azure_voice_shortname(lang, gender)
-            cache_key = _tts_cache_key("azure", voice, text)
-            cached = _tts_cache_get(cache_key)
-            if cached is not None:
-                return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            try:
-                speech_config = speechsdk.SpeechConfig(subscription=azure_key, region=azure_region)
-                speech_config.set_speech_synthesis_output_format(
-                    speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
-                )
-                speech_config.speech_synthesis_voice_name = voice
-                synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-                result = synthesizer.speak_text_async(text).get()
-                if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted and result.audio_data:
-                    _tts_cache_put(cache_key, result.audio_data)
-                    return Response(result.audio_data, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-                else:
-                    print("[TTS][Azure] synthesis failed:", result.reason)
-            except Exception as e:
-                print("[TTS][Azure] error:", e)
-
-        # 2) OpenAI TTS
-        if (provider in ("auto", "openai")) and _oa_client and os.getenv("OPENAI_API_KEY"):
-            voice = _openai_voice_name(lang, gender)
-            cache_key = _tts_cache_key("openai", voice, text)
-            cached = _tts_cache_get(cache_key)
-            if cached is not None:
-                return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            try:
-                res = _oa_client.audio.speech.create(
-                    model="gpt-4o-mini-tts",
-                    voice=voice,
-                    input=text,
-                    format="mp3",
-                )
-                audio_bytes = res.read()
-                _tts_cache_put(cache_key, audio_bytes)
-                return Response(audio_bytes, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            except Exception as e:
-                print("[TTS][OpenAI] error:", e)
-
-        # 3) gTTS fallback
-        if gTTS:
-            cache_key = _tts_cache_key("gtts", f"{lang}-{gender}", text)
-            cached = _tts_cache_get(cache_key)
-            if cached is not None:
-                return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            try:
-                fp = io.BytesIO()
-                gTTS(text=text, lang=("hi" if lang == "hi" else "en"), slow=False).write_to_fp(fp)
-                fp.seek(0)
-                audio = fp.read()
-                _tts_cache_put(cache_key, audio)
-                return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
-            except Exception as e:
-                print("[TTS][gTTS] error:", e)
-
-        # 4) Last resort
-        return Response(b"", mimetype="audio/mpeg")
-    except Exception as e:
-        print("[TTS] route error:", e)
-        return Response(b"", mimetype="audio/mpeg", status=500)
 
 # Gentle smalltalk without external LLM (works offline/quota-free)
 def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
@@ -338,12 +300,6 @@ def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hingl
     }.get(emo, "Theek hai.")
     return f"{prefix} Main yahin hoon. 5‑min ka reset bana du ya next step plan karein? Chahe to casually baat bhi kar sakte hain."
 
-# ---- Azure Speech dynamic import (no Pylance warning if not installed) ----
-try:
-    speechsdk = importlib.import_module("azure.cognitiveservices.speech")
-except Exception:
-    speechsdk = None
-
 # ---- TTS cache ----
 _TTS_CACHE = OrderedDict()
 _TTS_CACHE_MAX = 256
@@ -370,68 +326,6 @@ def _azure_voice_shortname(lang: str, gender: str) -> str:
 
 def _openai_voice_name(lang: str, gender: str) -> str:
     return "alloy" if (gender or "").lower() == "male" else "verse"
-
-# REPLACE: single /voice/tts (Azure → OpenAI → gTTS, cached)
-@app.route("/voice/tts", methods=["POST"])
-def voice_tts():
-    try:
-        data = request.get_json(force=True, silent=True) or {}
-        text = (data.get("text") or "").strip()
-        if not text:
-            return Response(b"", mimetype="audio/mpeg")
-        lang = (data.get("lang") or session.get("voice_lang", "hinglish")).lower()
-        gender = (data.get("gender") or session.get("voice_gender", "female")).lower()
-
-        provider = os.getenv("TTS_PROVIDER", "auto").lower()
-        azure_key = os.getenv("AZURE_SPEECH_KEY"); azure_region = os.getenv("AZURE_SPEECH_REGION")
-
-        # 1) Azure
-        if (provider in ("auto","azure")) and speechsdk and azure_key and azure_region:
-            voice = _azure_voice_shortname(lang, gender)
-            ck = _tts_cache_key("azure", voice, text); cached = _tts_cache_get(ck)
-            if cached is not None: return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
-            try:
-                speech_config = speechsdk.SpeechConfig(subscription=azure_key, region=azure_region)
-                speech_config.set_speech_synthesis_output_format(
-                    speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
-                )
-                speech_config.speech_synthesis_voice_name = voice
-                synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-                result = synthesizer.speak_text_async(text).get()
-                if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted and result.audio_data:
-                    _tts_cache_put(ck, result.audio_data)
-                    return Response(result.audio_data, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
-            except Exception as e:
-                print("[TTS][Azure] error:", e)
-
-        # 2) OpenAI
-        if (provider in ("auto","openai")) and _oa_client and os.getenv("OPENAI_API_KEY"):
-            voice = _openai_voice_name(lang, gender)
-            ck = _tts_cache_key("openai", voice, text); cached = _tts_cache_get(ck)
-            if cached is not None: return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
-            try:
-                res = _oa_client.audio.speech.create(model="gpt-4o-mini-tts", voice=voice, input=text, format="mp3")
-                audio_bytes = res.read()
-                _tts_cache_put(ck, audio_bytes)
-                return Response(audio_bytes, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
-            except Exception as e:
-                print("[TTS][OpenAI] error:", e)
-
-        # 3) gTTS
-        if gTTS:
-            ck = _tts_cache_key("gtts", f"{lang}-{gender}", text); cached = _tts_cache_get(ck)
-            if cached is not None: return Response(cached, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
-            try:
-                fp = io.BytesIO(); gTTS(text=text, lang=("hi" if lang=="hi" else "en"), slow=False).write_to_fp(fp)
-                fp.seek(0); audio = fp.read(); _tts_cache_put(ck, audio)
-                return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
-            except Exception as e:
-                print("[TTS][gTTS] error:", e)
-
-        return Response(b"", mimetype="audio/mpeg")
-    except Exception as e:
-        print("[TTS] route error:", e)
-        return Response(b"", mimetype="audio/mpeg", status=500)
 
 # NEW: simple emotion log (no schema break to existing tables)
 class EmotionEvent(db.Model):
@@ -692,77 +586,6 @@ def _stagger_times(base: Optional[dt_time], n: int) -> list[Optional[dt_time]]:
         return [dt_time((base.hour + i) % 24, base.minute) for i in range(n)]
     slots = [dt_time(10, 0), dt_time(14, 0), dt_time(18, 0)]
     return [slots[i % len(slots)] for i in range(n)]
-
-def decompose_goal_text(goal_text: str) -> list[Dict[str, Any]]:
-    """
-    Return a list of subtasks: [{name, category?}]
-    Uses OpenAI (if configured) else a compact local fallback.
-    """
-    text = (goal_text or "").strip()
-    if not text:
-        return []
-
-    # Try OpenAI JSON plan
-    if openai and os.getenv("OPENAI_API_KEY"):
-        try:
-            prompt = (
-                "Break the user's goal into a small, actionable checklist of 3-7 subtasks. "
-                "Return JSON only: {\"subtasks\":[{\"name\":\"...\"}, ...]}. "
-                f"Goal: {text}"
-            )
-            resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.4,
-            )
-            content = resp.choices[0].message.content.strip()
-            data = json.loads(content)
-            subs = data.get("subtasks", [])
-            out = []
-            for s in subs:
-                name = (s.get("name") or "").strip()
-                if name:
-                    out.append({"name": name})
-            if out:
-                return out
-        except Exception:
-            pass
-
-        # Fallback rules
-    t = text.lower()
-    if "exam" in t or "midterm" in t or "test" in t:
-        return [
-            {"name": "Outline exam topics"},
-            {"name": "Make formula/definition sheet"},
-            {"name": "Solve last year’s paper"},
-            {"name": "Review mistakes and weak areas"},
-        ]
-    if "presentation" in t or "deck" in t or "slides" in t:
-        return [
-            {"name": "Define key message and outline"},
-            {"name": "Draft slides"},
-            {"name": "Design visuals and charts"},
-            {"name": "Add speaker notes"},
-            {"name": "Rehearse twice"},
-        ]
-    if "trip" in t or "travel" in t:
-        return [
-            {"name": "Set dates and budget"},
-            {"name": "Book flights/trains"},
-            {"name": "Reserve hotel"},
-            {"name": "Create itinerary"},
-            {"name": "Pack essentials checklist"},
-        ]
-    
-     # Generic scaffold
-    return [
-        {"name": "Clarify the goal and success criteria"},
-        {"name": "List required resources"},
-        {"name": "Draft a plan with milestones"},
-        {"name": "Execute first milestone"},
-        {"name": "Review and adjust next steps"},
-    ]
 
 def create_goal_with_subtasks(uid: int, goal_text: str, final_due: Optional[date], default_time: Optional[dt_time],
                               category: str = "Other", parent_id: Optional[int] = None) -> Dict[str, Any]:
@@ -1671,88 +1494,6 @@ def voice_command():
         except Exception as e:
             print("[VOICE emotion]", e)
 
-        # NLU (OpenAI may quota-fail -> fallback heuristics)
-        parsed = nlu_understand(transcript, lang) or {"intent":"unknown","slots":{}}
-        intent = parsed.get("intent","unknown")
-        slots = parsed.get("slots") if isinstance(parsed.get("slots"), dict) else {}
-
-        # Smalltalk
-        if intent == "smalltalk":
-            msg = _gen_empathetic_reply_local(transcript, emotion, lang)
-            _save_flow({"mode":"add","step":"due","task":{"name": tr("Take a 5‑minute reset","5‑minute ka reset lo","5‑minute ka reset lo")}})
-            return jsonify({"message": msg, "continue_listening": True, "task_added": False})
-
-        # Intents
-        if intent == "add_task":
-            name = normalize_task_name(slots.get("task") or "")
-            if name:
-                _save_flow({"mode":"add","step":"due","task":{"name": name}})
-                return jsonify({"message": tr(
-                                    f"Adding ‘{name}’. When is it due? Say today, tomorrow, a date, or skip.",
-                                    f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip.",
-                                    f"‘{name}’ add kar raha hoon. Kab tak due? Aaj, kal, koi date, ya skip."
-                                ),
-                                "continue_listening": True, "task_added": False})
-
-        if intent == "list_tasks" and uid:
-            tasks = Task.query.filter_by(user_id=uid).order_by(Task.completed.asc(), Task.id.desc()).all()
-            if not tasks:
-                return jsonify({"message": tr("You have no tasks.","Aapke paas abhi koi tasks nahi hain.","Koi tasks nahi hain."),
-                                "continue_listening": False, "task_added": False})
-            preview = ", ".join(f"{t.name} ({'done' if t.completed else 'pending'})" for t in tasks[:5])
-            more = f" and {len(tasks)-5} more." if len(tasks) > 5 else ""
-            return jsonify({"message": tr(f"You have {len(tasks)} tasks: {preview}{more}",
-                                          f"Aapke {len(tasks)} tasks hain: {preview}{more}",
-                                          f"Aapke {len(tasks)} tasks hain: {preview}{more}"),
-                            "continue_listening": False, "task_added": False})
-
-        if intent == "complete_task" and uid and slots.get("task"):
-            q = normalize_task_name(slots["task"])
-            cand = Task.query.filter(Task.user_id==uid, Task.name.ilike(f"%{q}%"), Task.completed == False).first()
-            if cand:
-                cand.completed = True
-                db.session.commit()
-                _clear_flow()
-                return jsonify({"message": tr(f"Marked ‘{cand.name}’ complete.","‘{cand.name}’ complete kar diya.","‘{cand.name}’ complete ho gaya."),
-                                "continue_listening": False, "task_added": False, "reload_page": True})
-
-        if intent == "delete_task" and uid and slots.get("task"):
-            q = normalize_task_name(slots["task"])
-            cand = Task.query.filter(Task.user_id==uid, Task.name.ilike(f"%{q}%")).first()
-            if cand:
-                title = cand.name
-                if cand.parent_id is None:
-                    Task.query.filter_by(user_id=uid, parent_id=cand.id).delete(synchronize_session=False)
-                db.session.delete(cand)
-                db.session.commit()
-                _clear_flow()
-                return jsonify({"message": tr(f"Deleted ‘{title}’.","‘{title}’ delete kar diya.","‘{title}’ delete ho gaya."),
-                                "continue_listening": False, "task_added": False, "reload_page": True})
-
-        if intent == "reschedule" and uid:
-            try:
-                days = int(slots.get("days") or 1)
-            except Exception:
-                days = 1
-            moved = apply_reschedule(uid, days=days)
-            return jsonify({"message": tr(
-                                f"I moved {moved} task(s) by {days} day(s)." if moved else "No tasks to move.",
-                                f"{moved} tasks {days} din ke liye shift kiye." if moved else "Shift karne ko kuch nahi mila.",
-                                f"{moved} tasks {days} din ke liye shift kiye." if moved else "Kuch shift karne ko nahi mila."
-                            ),
-                            "continue_listening": True, "task_added": False, "reload_page": bool(moved)})
-
-        if intent == "decompose" and uid:
-            goal = normalize_task_name(slots.get("goal") or "")
-            if goal:
-                _save_flow({"mode":"decompose","step":"ask_due","payload":{"goal":goal}})
-                return jsonify({"message": tr(
-                                    f"Okay, breaking down ‘{goal}’. What’s the final due date? Say a date or skip.",
-                                    f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip.",
-                                    f"Thik hai, ‘{goal}’ todte hain. Final due date kya rakhein? Date bolo ya skip."
-                                ),
-                                "continue_listening": True, "task_added": False})
-
         # Flow
         flow = _get_flow()
         mode = flow.get("mode")
@@ -1953,144 +1694,6 @@ def tr(en: str, hi: str = None, hi_en: str = None) -> str:
     if lang == "hi" and hi: return hi
     if lang == "hinglish" and hi_en: return hi_en
     return en
-
-# ---- Free-form NLU (OpenAI if available, else heuristic) ----
-def nlu_understand(text: str, lang: str = "hinglish") -> Dict[str, Any]:
-    t = (text or "").strip()
-    if not t:
-        return {"intent":"unknown","slots":{}}
-    if openai and os.getenv("OPENAI_API_KEY"):
-        try:
-            sys_prompt = (
-                "Extract the user's intent for a task manager. "
-                "Intents: add_task, complete_task, delete_task, list_tasks, decompose, reschedule, smalltalk, unknown. "
-                "Slots: task, goal, due, time, category, days. "
-                "User may speak English, Hindi, or Hinglish. Return ONLY JSON."
-            )
-            resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role":"system","content":sys_prompt},{"role":"user","content":t}],
-                max_tokens=150, temperature=0.2,
-            )
-            return json.loads(resp.choices[0].message.content.strip())
-        except Exception as e:
-            print("[NLU] OpenAI error:", e)
-    tl = t.lower()
-
-# Heuristic fallback (English/Hindi/Hinglish mix)
-    if any(k in tl for k in ("break it down","break this down","break down","decompose","subtask","plan this","plan for","tordo","tod do","toad do","tode do","tod do","toda do","toda do")):
-        return {"intent":"decompose","slots":{"goal": t}}
-    if any(k in tl for k in ("add","create","new task","add task","jodo","kaam jodo","task jodo","naya kaam")):
-        return {"intent":"add_task","slots":{"task": _title_from_transcript(tl) or t}}
-    if any(k in tl for k in ("delete","remove","mitao","hatado","hata do","delete kar do")):
-        return {"intent":"delete_task","slots":{"task": tl.split("delete",1)[-1].strip() or tl.split("remove",1)[-1].strip()}}
-    if any(k in tl for k in ("complete","finish","done","khatam","poora","ho gaya")):
-        return {"intent":"complete_task","slots":{"task": tl.replace("complete","").replace("finish","").replace("done","").strip()}}
-    if any(k in tl for k in ("list","show","tasks","dikhado","list dikhao","kaam dikhao")):
-        return {"intent":"list_tasks","slots":{}}
-    if any(k in tl for k in ("reschedule","postpone","move tasks","kal kar do","tomorrow","shift karo")):
-        return {"intent":"reschedule","slots":{"days":"1"}}
-    # Smalltalk/moral support heuristics
-    if any(k in tl for k in ("stressed","anxious","sad","tired","lonely","down","overwhelmed","bura lag")):
-        return {"intent":"smalltalk","slots":{"mood":"low"}}
-    return {"intent":"unknown","slots":{}}
-
-
-# OpenAI Assistant skeleton
-class AIAssistant:
-    """
-    Light wrapper for OpenAI ChatCompletion (kept as a skeleton).
-    Reads OPENAI_API_KEY from environment. If openai package not available or key not set,
-    assistant methods will return safe fallback messages.
-    """
-    def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY")
-        if self.api_key and openai:
-            openai.api_key = self.api_key
-        else:
-            if not self.api_key:
-                print("[AIAssistant] OPENAI_API_KEY not set in environment.")
-            if not openai:
-                print("[AIAssistant] openai package not available.")
-
-    def get_ai_response(self, user_input: str, current_tasks: list):
-        """
-        Simple assistant that instructs the model to return JSON with a small action.
-        Kept extremely defensive: if OpenAI is not set up, return a safe fallback.
-        """
-        if not openai or not self.api_key:
-            return {"action": "chat", "message": "EI assistant not configured."}
-
-        try:
-            tasks_summary = [f"ID {t.id}: {t.name}" for t in current_tasks if not t.completed]
-            system_prompt = f"You are a helpful task assistant. Current pending tasks: {tasks_summary}. Respond in JSON actions."
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role":"system", "content": system_prompt},
-                    {"role":"user", "content": user_input}
-                ],
-                max_tokens=150,
-                temperature=0.7
-            )
-            text = response.choices[0].message.content
-            try:
-                return json.loads(text)
-            except Exception:
-                return {"action": "chat", "message": text}
-        except Exception as e:
-            print("[AIAssistant] OpenAI error:", e)
-            return {"action": "chat", "message": "Sorry, I couldn't get a response from EI."}
-
-    def speak_response(self, text: str):
-        """Optionally speak response using TTS (non-blocking)."""
-        speak_text_nonblocking(text)
-
-ai_assistant = AIAssistant()
-
-# Emotional Intelligence
-def detect_emotion(text: str) -> Tuple[str, float]:
-    """
-    Return (label, score) where label in {stressed, sad, tired, positive, neutral}.
-    Uses OpenAI if configured; otherwise a small lexicon fallback.
-    """
-    t = (text or "").lower().strip()
-    if not t:
-        return ("neutral", 0.0)
-    
-    # Try OpenAI classification if available
-    if openai and os.getenv("OPENAI_API_KEY"):
-        try:
-            prompt = (
-                "Classify the user's emotion into one of: stressed, sad, tired, positive, neutral. "
-                "Return JSON: {\"emotion\":\"...\",\"score\":0-1}. User: " + t
-            )
-            resp = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role":"user","content":prompt}],
-                max_tokens=60,
-                temperature=0.2,
-            )
-            content = resp.choices[0].message.content.strip()
-            data = json.loads(content)
-            emo = str(data.get("emotion","neutral")).lower()
-            score = float(data.get("score", 0.6))
-            if emo not in {"stressed","sad","tired","positive","neutral"}:
-                emo = "neutral"
-            return (emo, max(0.0, min(score, 1.0)))
-        except Exception:
-            pass
- # Fallback lexicon
-    NEG_STRESS = {"overwhelmed","stress","stressed","anxious","panic","pressure","burnout","burned out","busy","too much"}
-    NEG_SAD    = {"sad","down","upset","depressed","cry","lonely","hurt","bad day"}
-    NEG_TIRED  = {"tired","exhausted","fatigued","sleepy","drained","worn out","not well","sick","headache"}
-    POSITIVE   = {"great","good","awesome","amazing","excited","happy","fantastic","love"}
-    score = 0.0
-    if any(w in t for w in NEG_STRESS): return ("stressed", 0.8)
-    if any(w in t for w in NEG_SAD):    return ("sad", 0.8)
-    if any(w in t for w in NEG_TIRED):  return ("tired", 0.8)
-    if any(w in t for w in POSITIVE):   return ("positive", 0.7)
-    return ("neutral", 0.5)
 
 def log_emotion(user_id: Optional[int], emotion: str, score: float) -> None:
     try:
