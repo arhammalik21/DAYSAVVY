@@ -10,8 +10,6 @@ from typing import Optional, Dict, Any, Tuple
 from werkzeug.security import generate_password_hash, check_password_hash
 import hashlib
 from collections import OrderedDict
-from gtts import gTTS
-import pygame
 
 # Flask + extensions
 from flask import (
@@ -314,22 +312,27 @@ class User(db.Model):
     tasks = db.relationship('Task', backref='user', lazy=True) 
 
 # TTS Endpoint using gTTS
+from TTS.api import TTS as CoquiTTS
+
+# Load the TTS model once at startup (choose a model you like)
+coqui_tts_model = CoquiTTS(model_name="tts_models/en/vctk/vits")  # You can try other models as well
+
 @app.route("/voice/tts", methods=["POST"])
 def voice_tts():
     data = request.get_json(force=True, silent=True) or {}
     text = (data.get("text") or "").strip()
-    if not text:
-        return Response(b"", mimetype="audio/mpeg")
     lang = (data.get("lang") or "en").lower()
+    if not text:
+        return Response(b"", mimetype="audio/wav")
+    # You can select a different model or speaker based on lang if you want
     try:
-        fp = io.BytesIO()
-        gTTS(text=text, lang=("hi" if lang=="hi" else "en"), slow=False).write_to_fp(fp)
-        fp.seek(0)
-        audio = fp.read()
-        return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control":"no-store"})
+        # Synthesize speech to a bytes buffer
+        wav_bytes = coqui_tts_model.tts_to_file(text=text, file_path=None, speaker=None, language=None, return_bytes=True)
+        return Response(wav_bytes, mimetype="audio/wav", headers={"Cache-Control":"no-store"})
     except Exception as e:
-        print("[TTS][gTTS] error:", e)
-        return Response(b"", mimetype="audio/mpeg", status=500)
+        print("[TTS][Coqui] error:", e)
+        return Response(b"", mimetype="audio/wav", status=500)
+
 # Gentle smalltalk without external LLM (works offline/quota-free)
 def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
     emo = (emotion or "neutral").lower()
@@ -591,33 +594,6 @@ def normalize_task_name(s: str) -> str:
     if not s:
         return ""
     return re.sub(r'\s+', ' ', s.strip())
-
-# TTS playing helper (non-blocking)
-def speak_text_nonblocking(text: str):
-    """
-    Play text-to-speech without blocking the main thread.
-    Uses gTTS + pygame if available. If not available, prints text.
-    In production, you probably want client-side TTS instead.
-    """
-    if not gTTS or not pygame:
-        print("[TTS] gTTS/pygame not available. Text:", text)
-        return
-
-    def _play():
-        try:
-            tts = gTTS(text=text, lang='en', slow=False)
-            fp = io.BytesIO()
-            tts.write_to_fp(fp)
-            fp.seek(0)
-            pygame.mixer.init()
-            pygame.mixer.music.load(fp)
-            pygame.mixer.music.play()
-            while pygame.mixer.music.get_busy():
-                pygame.time.Clock().tick(10)
-        except Exception as e:
-            print("[TTS] playback error:", e)
-
-    threading.Thread(target=_play, daemon=True).start()
 
 # Smart Task Decomposition
 def _evenly_spaced_dates(final_due: Optional[date], n: int) -> list[Optional[date]]:
