@@ -59,9 +59,14 @@ db = SQLAlchemy(app)
 migrate = Migrate(app, db)
 
 # Voice Components
+_groq = None
 try:
-    from groq import Groq
-    _groq = Groq(api_key=os.getenv("GROQ_API_KEY")) if os.getenv("GROQ_API_KEY") else None
+    # Import groq dynamically to avoid static analyzer errors when the package
+    # is not installed in the development environment.
+    import importlib
+    groq_mod = importlib.import_module("groq")
+    Groq = getattr(groq_mod, "Groq", None)
+    _groq = Groq(api_key=os.getenv("GROQ_API_KEY")) if (Groq and os.getenv("GROQ_API_KEY")) else None
 except Exception:
     _groq = None
 
@@ -93,7 +98,7 @@ def nlu_understand(text: str, lang: str = "hinglish") -> dict:
                 "User may speak English, Hindi, or Hinglish. Return ONLY compact JSON."
             )
             resp = _groq.chat.completions.create(
-                model=os.getenv("GROQ_MODEL","llama-3-8b"),
+                model=os.getenv("GROQ_MODEL", "moonshotai/kimi-k2-instruct-0905"),
                 messages=[{"role":"system","content":sys_prompt},{"role":"user","content":t}],
                 temperature=0.2, max_tokens=200,
             )
@@ -128,7 +133,7 @@ def detect_emotion(text: str) -> tuple:
     if _groq:
         try:
             resp = _groq.chat.completions.create(
-                model=os.getenv("GROQ_MODEL","llama-3-8b"),
+                model=os.getenv("GROQ_MODEL","moonshotai/kimi-k2-instruct-0905"),
                 messages=[{"role":"system","content":"Classify emotion: stressed, sad, tired, positive, neutral. Return JSON {\"emotion\":\"...\",\"score\":0-1}."},
                           {"role":"user","content": t}],
                 temperature=0.1, max_tokens=40,
@@ -165,7 +170,7 @@ def decompose_goal_text(goal_text: str) -> list:
                 f"Goal: {text}"
             )
             resp = _groq.chat.completions.create(
-                model=os.getenv("GROQ_MODEL","llama-3-8b"),
+                model=os.getenv("GROQ_MODEL","moonshotai/kimi-k2-instruct-0905"),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=220,
                 temperature=0.4,
@@ -255,7 +260,7 @@ def voice_chat():
                 "If they mention tasks or goals, you can help break them down or add them."
             )
             resp = _groq.chat.completions.create(
-                model=os.getenv("GROQ_MODEL", "llama-3-8b"),
+                model=os.getenv("GROQ_MODEL", "moonshotai/kimi-k2-instruct-0905"),
                 messages=[
                     {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": user_msg}
@@ -325,7 +330,6 @@ def voice_tts():
     except Exception as e:
         print("[TTS][gTTS] error:", e)
         return Response(b"", mimetype="audio/mpeg", status=500)
-
 # Gentle smalltalk without external LLM (works offline/quota-free)
 def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
     emo = (emotion or "neutral").lower()
@@ -1311,7 +1315,6 @@ def voice_command_legacy():
                                               "Bana du? Haan ya na bolo.",
                                               "Bana du? Haan ya na bolo."),
                                 "continue_listening": True, "task_added": False})
-
         # Unknown → gentle fallback
         if _groq:
             try:
@@ -1322,7 +1325,7 @@ def voice_command_legacy():
                     "If they mention tasks or goals, you can help break them down or add them."
                 )
                 resp = _groq.chat.completions.create(
-                    model=os.getenv("GROQ_MODEL", "llama-3-8b"),
+                    model=os.getenv("GROQ_MODEL", "moonshotai/kimi-k2-instruct-0905"),
                     messages=[
                         {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": transcript}
@@ -1746,7 +1749,7 @@ def voice_command():
                     "If they mention tasks or goals, you can help break them down or add them."
                 )
                 resp = _groq.chat.completions.create(
-                    model=os.getenv("GROQ_MODEL", "llama-3-8b"),
+                    model=os.getenv("GROQ_MODEL", "moonshotai/kimi-k2-instruct-0905"),
                     messages=[
                         {"role": "system", "content": sys_prompt},
                         {"role": "user", "content": transcript}
