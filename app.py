@@ -311,11 +311,10 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
 
-# TTS Endpoint using gTTS
-from TTS.api import TTS as CoquiTTS
-
-# Load the TTS model once at startup (choose a model you like)
-coqui_tts_model = CoquiTTS(model_name="tts_models/en/vctk/vits")  # You can try other models as well
+# TTS using pyttsx3 (offline)
+import pyttsx3
+import tempfile
+import os
 
 @app.route("/voice/tts", methods=["POST"])
 def voice_tts():
@@ -324,15 +323,32 @@ def voice_tts():
     lang = (data.get("lang") or "en").lower()
     if not text:
         return Response(b"", mimetype="audio/wav")
-    # You can select a different model or speaker based on lang if you want
     try:
-        # Synthesize speech to a bytes buffer
-        wav_bytes = coqui_tts_model.tts_to_file(text=text, file_path=None, speaker=None, language=None, return_bytes=True)
-        return Response(wav_bytes, mimetype="audio/wav", headers={"Cache-Control":"no-store"})
+        engine = pyttsx3.init()
+        # Optionally set voice based on lang
+        voices = engine.getProperty('voices')
+        if lang == "hi":
+            for v in voices:
+                if "hindi" in v.name.lower():
+                    engine.setProperty('voice', v.id)
+                    break
+        else:
+            for v in voices:
+                if "english" in v.name.lower():
+                    engine.setProperty('voice', v.id)
+                    break
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as fp:
+            temp_path = fp.name
+        engine.save_to_file(text, temp_path)
+        engine.runAndWait()
+        with open(temp_path, "rb") as fp:
+            audio = fp.read()
+        os.remove(temp_path)
+        return Response(audio, mimetype="audio/wav", headers={"Cache-Control": "no-store"})
     except Exception as e:
-        print("[TTS][Coqui] error:", e)
+        print("[TTS][pyttsx3] error:", e)
         return Response(b"", mimetype="audio/wav", status=500)
-
+    
 # Gentle smalltalk without external LLM (works offline/quota-free)
 def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
     emo = (emotion or "neutral").lower()
