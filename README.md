@@ -80,8 +80,3 @@ DAYSAVVY/
 - Report issues: arhammaliksg@gmail.com
 
 
-## How to Run Locally
-
-1. Clone the repository:  
-   ```bash
-   git clone https://github.com/arhammalik21/DAYSAVVY.git
