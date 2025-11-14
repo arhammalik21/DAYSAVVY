@@ -252,11 +252,12 @@ def voice_chat():
         try:
             # You can customize the system prompt for personality
             sys_prompt = (
-                "You are DaySavvy, a friendly, helpful, and gentle productivity assistant. "
-                "You can chat about anything, help with tasks, listen to feelings, and keep the conversation going naturally. "
-                "Reply in a warm, human-like, casual tone. If the user seems stressed or sad, offer encouragement or a reset. "
-                "If they mention tasks or goals, you can help break them down or add them."
-            )
+    "You are DaySavvy, the world's first EI (Emotional Intelligence) assistant. "
+    "You support humans emotionally, help with productivity, and keep conversations lively with wit and humor. "
+    "You can assist with any task, break down goals, listen to feelings, and offer encouragement or resets when needed. "
+    "Reply in a warm, human-like, and casual tone. Crack jokes or use playful banter to lighten the mood, especially if the user seems stressed or sad. "
+    "If tasks or goals are mentioned, help organize, plan, or decompose them. Always aim to make the user feel understood, supported, and uplifted."
+)
             resp = _groq.chat.completions.create(
                 model=os.getenv("GROQ_MODEL", "moonshotai/kimi-k2-instruct-0905"),
                 messages=[
@@ -311,43 +312,30 @@ class User(db.Model):
     password = db.Column(db.String(200), nullable=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
 
-# TTS using pyttsx3 (offline)
-import pyttsx3
+# Text-to-Speech Endpoint using gTTS
+from gtts import gTTS
 import tempfile
-import os
 
 @app.route("/voice/tts", methods=["POST"])
 def voice_tts():
     data = request.get_json(force=True, silent=True) or {}
     text = (data.get("text") or "").strip()
     lang = (data.get("lang") or "en").lower()
+    # Map 'hinglish' to 'en' for gTTS
+    if lang == "hinglish":
+        lang = "en"
     if not text:
-        return Response(b"", mimetype="audio/wav")
+        return Response(b"", mimetype="audio/mpeg")
     try:
-        engine = pyttsx3.init()
-        # Optionally set voice based on lang
-        voices = engine.getProperty('voices')
-        if lang == "hi":
-            for v in voices:
-                if "hindi" in v.name.lower():
-                    engine.setProperty('voice', v.id)
-                    break
-        else:
-            for v in voices:
-                if "english" in v.name.lower():
-                    engine.setProperty('voice', v.id)
-                    break
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as fp:
-            temp_path = fp.name
-        engine.save_to_file(text, temp_path)
-        engine.runAndWait()
-        with open(temp_path, "rb") as fp:
+        tts = gTTS(text=text, lang=lang)
+        with tempfile.NamedTemporaryFile(delete=True) as fp:
+            tts.write_to_fp(fp)
+            fp.seek(0)
             audio = fp.read()
-        os.remove(temp_path)
-        return Response(audio, mimetype="audio/wav", headers={"Cache-Control": "no-store"})
+        return Response(audio, mimetype="audio/mpeg", headers={"Cache-Control": "no-store"})
     except Exception as e:
-        print("[TTS][pyttsx3] error:", e)
-        return Response(b"", mimetype="audio/wav", status=500)
+        print("[TTS][gTTS] error:", e)
+        return Response(b"", mimetype="audio/mpeg", status=500)
     
 # Gentle smalltalk without external LLM (works offline/quota-free)
 def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hinglish") -> str:
@@ -1040,9 +1028,9 @@ import re
 def voice_welcome():
     return jsonify({
         "message": tr(
-            "Hey, I’m here. Talk to me casually—add tasks, break a goal down, reschedule today, or just share what’s on your mind.",
-            "Hi, main yahin hoon. Aaram se bolo—kaam jodo, goal tod do, aaj ke kaam shift karo, ya jo mann mein ho share karo.",
-            "Hey, main yahin hoon. Bindaas bolo—task add karo, goal tod do, aaj ka shift karo, ya bas jo chal raha hai share karo."
+           "Hey, I’m DaySavvy—your friendly EI assistant. You can chat, add tasks, break down goals, reschedule your day, or just share what’s on your mind. I’m here to help and keep things light!",
+"Hi, main DaySavvy hoon—tumhara friendly EI assistant! Bindaas baat karo, tasks add karo, goals tod do, aaj ka plan shift karo, ya jo mann mein ho share karo. Main hamesha madad aur support ke liye yahan hoon!",
+"DaySavvy yahan hai—tumhara EI assistant! Chill karo, task add karo, goal tod do, aaj ka shift karo, ya bas jo chal raha hai share karo. Main help aur mazaak ke liye ready hoon!"
         ),
         "continue_listening": True
     })
