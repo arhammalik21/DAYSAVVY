@@ -12,10 +12,6 @@ import hashlib
 from collections import OrderedDict
 
 # Flask + extensions
-from flask import (
-    Flask, render_template, redirect, url_for, flash, abort, request,
-    jsonify, session, send_from_directory
-)
 from flask_wtf import FlaskForm, CSRFProtect
 from wtforms import StringField, DateField, SelectField, TimeField, SubmitField, PasswordField
 from wtforms.validators import DataRequired, Optional as WTOptional, Length
@@ -26,7 +22,7 @@ from flask_cors import CORS
 from sqlalchemy.exc import IntegrityError
 from flask import (
     Flask, render_template, redirect, url_for, flash, abort, request,
-    jsonify, session, send_from_directory, Response  # add Response
+    jsonify, session, send_from_directory, Response 
 )
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -310,6 +306,7 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(200), nullable=False)
+    onboarding_done = db.Column(db.Boolean, default=False)
     tasks = db.relationship('Task', backref='user', lazy=True) 
 
 # Text-to-Speech Endpoint using gTTS
@@ -367,33 +364,6 @@ def _gen_empathetic_reply_local(user_text: str, emotion: str, lang: str = "hingl
         "neutral": "Theek hai."
     }.get(emo, "Theek hai.")
     return f"{prefix} Main yahin hoon. 5‑min ka reset bana du ya next step plan karein? Chahe to casually baat bhi kar sakte hain."
-
-# ---- TTS cache ----
-_TTS_CACHE = OrderedDict()
-_TTS_CACHE_MAX = 256
-def _tts_cache_key(provider: str, voice: str, text: str) -> str:
-    return hashlib.sha256(f"{provider}|{voice}|{text}".encode("utf-8")).hexdigest()
-def _tts_cache_get(key: str):
-    if key in _TTS_CACHE:
-        _TTS_CACHE.move_to_end(key)
-        return _TTS_CACHE[key]
-    return None
-def _tts_cache_put(key: str, value: bytes):
-    _TTS_CACHE[key] = value
-    _TTS_CACHE.move_to_end(key)
-    while len(_TTS_CACHE) > _TTS_CACHE_MAX:
-        _TTS_CACHE.popitem(last=False)
-
-def _azure_voice_shortname(lang: str, gender: str) -> str:
-    lg = (lang or "hinglish").lower(); gd = (gender or "female").lower()
-    if lg == "hi":
-        return "hi-IN-MadhurNeural" if gd == "male" else "hi-IN-SwaraNeural"
-    if lg == "en":
-        return "en-US-GuyNeural" if gd == "male" else "en-US-JennyNeural"
-    return "en-IN-PrabhatNeural" if gd == "male" else "en-IN-NeerjaNeural"
-
-def _openai_voice_name(lang: str, gender: str) -> str:
-    return "alloy" if (gender or "").lower() == "male" else "verse"
 
 # NEW: simple emotion log (no schema break to existing tables)
 class EmotionEvent(db.Model):
@@ -765,6 +735,8 @@ def index():
     if "user_id" not in session:
         return redirect(url_for("login"))
     user_id = session["user_id"]
+    user = db.session.get(User, user_id)
+    show_onboarding = not user.onboarding_done if user else True
     form = TaskForm()
     
     if form.validate_on_submit():
@@ -831,6 +803,7 @@ def index():
         "index.html",
         form=form,
         tasks=tasks_filtered,
+        show_onboarding=show_onboarding,
         incomplete_tasks=incomplete_tasks,
         completed_tasks=completed_tasks,
         parents_incomplete=parents_incomplete,
@@ -838,6 +811,18 @@ def index():
         children_map=children_map,
         current_date=date.today()
     )
+
+# API to mark onboarding as done
+@app.route("/api/onboarding_done", methods=["POST"])
+def api_onboarding_done():
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "Unauthorized"}), 401
+    user = db.session.get(User, uid)
+    if user:
+        user.onboarding_done = True
+        db.session.commit()
+    return jsonify({"ok": True})
 
 @app.route("/edit/<int:task_id>", methods=["GET", "POST"])
 def edit_task(task_id):
