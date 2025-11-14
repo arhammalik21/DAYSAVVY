@@ -451,7 +451,7 @@ def logout():
 @app.context_processor
 def inject_current_user():
     uid = session.get("user_id")
-    user = User.query.get(uid) if uid else None
+    user = db.session.get(User, uid) if uid else None
     return {"current_user": user}
 
 # Forms
