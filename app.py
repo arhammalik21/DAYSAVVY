@@ -732,10 +732,8 @@ def add_no_cache_headers(response):
 
 @app.route("/", methods=["GET", "POST"])
 def index():
-    if "user_id" not in session:
-        return redirect(url_for("login"))
-    user_id = session["user_id"]
-    user = db.session.get(User, user_id)
+    user_id = session.get("user_id")
+    user = db.session.get(User, user_id) if user_id else None
     show_onboarding = not user.onboarding_done if user else True
     form = TaskForm()
     

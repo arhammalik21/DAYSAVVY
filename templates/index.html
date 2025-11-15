@@ -187,6 +187,29 @@
   <!-- Main content container -->
   <div class="container pb-4">
 
+<!-- Onboarding modal -->
+ {% if show_onboarding %}
+<div id="onboarding-modal" class="modal">
+  <div class="modal-content">
+    <h2>Welcome to DaySavvy!</h2>
+    <p>Here’s how to get started:</p>
+    <ul>
+      <li>Add tasks by typing or using your voice.</li>
+      <li>Break down goals into subtasks.</li>
+      <li>Track your mood and get encouragement.</li>
+      <li>Try saying: “Add buy milk tomorrow” or “Break down prepare for exam”.</li>
+    </ul>
+    <button onclick="closeOnboarding()">Got it!</button>
+  </div>
+</div>
+<script>
+function closeOnboarding() {
+    document.getElementById('onboarding-modal').style.display = 'none';
+    fetch('/api/onboarding_done', {method: 'POST'});
+}
+</script>
+{% endif %}
+
     <!-- Flash messages (feedback after actions) -->
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
@@ -236,41 +259,76 @@
     <div class="card mb-4">
   <div class="card-header">Add Task</div>
   <div class="card-body">
-    <form method="POST" action="{{ url_for('index') }}" class="row g-2">
-      {{ form.csrf_token }}
-      <div class="col-12">
-        {{ form.task(class="form-control", placeholder="Task or goal (e.g., Prepare for my midterm exam)") }}
+    {% if current_user %}
+      <form method="POST" action="{{ url_for('index') }}" class="row g-2">
+        {{ form.csrf_token }}
+        <div class="col-12">
+          {{ form.task(class="form-control", placeholder="Task or goal (e.g., Prepare for my midterm exam)") }}
+        </div>
+        <div class="col-md-3">
+          {{ form.due_date(class="form-control", placeholder="YYYY-MM-DD") }}
+        </div>
+        <div class="col-md-2">
+          <input type="time" name="task_time" id="task_time" class="form-control" />
+        </div>
+        <div class="col-md-3">
+          {{ form.category(class="form-select") }}
+        </div>
+        <div class="col-md-2 d-grid">
+          <button type="submit" class="btn btn-primary">Add</button>
+        </div>
+        <div class="col-md-2 d-grid">
+          <button type="button" id="decomposeBtn" class="btn btn-outline-primary">Decompose</button>
+        </div>
+      </form>
+    {% else %}
+      <div class="alert alert-info">
+        Please <a href="{{ url_for('login') }}">login</a> or <a href="{{ url_for('register') }}">register</a> to add or manage tasks.
       </div>
-      <div class="col-md-3">
-        {{ form.due_date(class="form-control", placeholder="YYYY-MM-DD") }}
-      </div>
-      <div class="col-md-2">
-        <input type="time" name="task_time" id="task_time" class="form-control" />
-      </div>
-      <div class="col-md-3">
-        {{ form.category(class="form-select") }}
-      </div>
-      <div class="col-md-2 d-grid">
-        <button type="submit" class="btn btn-primary">Add</button>
-      </div>
-      <div class="col-md-2 d-grid">
-        <button type="button" id="decomposeBtn" class="btn btn-outline-primary">Decompose</button>
-      </div>
-        </form>
-      </div>
-    </div>
+    {% endif %}
+  </div>
+</div>
 
 <!-- EI voice command block -->
-<div class="mb-3">
-    <button id="voiceBtn" class="btn btn-ei-mic" onclick="startVoiceControl()" aria-label="Start voice">
-        <i class="material-icons-outlined">mic</i>
-        <span class="mic-text">EI Voice</span>
+{% if current_user %}
+  <!-- EI voice command block for logged-in users -->
+  <div class="mb-3">
+      <button id="voiceBtn" class="btn btn-ei-mic" onclick="startVoiceControl()" aria-label="Start voice">
+          <i class="material-icons-outlined">mic</i>
+          <span class="mic-text">EI Voice</span>
+      </button>
+      <button id="stopBtn" class="btn btn-danger ms-2" onclick="stopVoiceControl()" style="display: none;" aria-label="Stop voice">
+          <i class="material-icons-outlined">stop</i>
+          Stop
+      </button>
+      <div id="voiceStatus" class="mt-2 text-muted">🎙️ Click EI Voice to start</div>
+  </div>
+{% else %}
+  <!-- Show disabled EI Voice button and popup for guests -->
+  <div class="mb-3">
+    <button class="btn btn-ei-mic" onclick="showLoginVoiceModal()" aria-label="Start voice">
+      <i class="material-icons-outlined">mic</i>
+      <span class="mic-text">EI Voice</span>
     </button>
-    <button id="stopBtn" class="btn btn-danger ms-2" onclick="stopVoiceControl()" style="display: none;" aria-label="Stop voice">
-        <i class="material-icons-outlined">stop</i>
-        Stop
-    </button>
-    <div id="voiceStatus" class="mt-2 text-muted">🎙️ Click EI Voice to start</div>
+  </div>
+  <div id="loginVoiceModal" class="modal" style="display:none;">
+    <div class="modal-content" style="padding:24px; background:#fff; border-radius:8px; max-width:350px; margin:40px auto;">
+      <h5>Please login or register</h5>
+      <p>You need to login or register to use EI Voice commands.</p>
+      <a href="{{ url_for('login') }}" class="btn btn-sm btn-outline-primary me-2">Login</a>
+      <a href="{{ url_for('register') }}" class="btn btn-sm btn-success">Register</a>
+      <button onclick="closeLoginVoiceModal()" class="btn btn-link mt-2">Close</button>
+    </div>
+  </div>
+  <script>
+    function showLoginVoiceModal() {
+      document.getElementById('loginVoiceModal').style.display = 'block';
+    }
+    function closeLoginVoiceModal() {
+      document.getElementById('loginVoiceModal').style.display = 'none';
+    }
+  </script>
+{% endif %}
 
 <!-- EI Voice: language + gender controls -->
 <div class="d-flex align-items-center gap-2 mb-2">
